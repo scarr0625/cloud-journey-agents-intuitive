@@ -35,7 +35,7 @@ def test_wait_does_not_approve_or_change_state(service) -> None:
     assert result["timed_out"] is True
     assert result["approval_observed"] is False
     assert result["current_state"] == "WAITING_FOR_APPROVAL"
-    assert result["version"] == 7
+    assert result["version"] == 8
 
 
 def test_external_backend_approves_then_cloud_compass_resumes(service) -> None:

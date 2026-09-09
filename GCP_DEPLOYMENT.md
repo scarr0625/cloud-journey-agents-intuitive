@@ -38,7 +38,7 @@ existing Cloud SQL table.
 For a completely empty database, apply all files in order, beginning with
 `migrations/000_initial_schema.sql`. For an existing database that already has
 the three Journey tables, do not apply `000`; use the upgrade checks and commands
-below for `001` and `002`.
+below for `001`, `002`, and `003`.
 
 To intentionally discard an existing PoC database and rebuild it through a
 locally running Cloud SQL Auth Proxy, first stop agents that connect to it, then
@@ -53,7 +53,7 @@ run:
 
 This drops only the named database, not the Cloud SQL instance. The script
 requires confirmation, recreates the database with `journey` as owner, and
-applies `000`, `001`, and `002` in filename order.
+applies `000`, `001`, `002`, and `003` in filename order.
 
 With the Cloud SQL Auth Proxy already running, first check for existing
 duplicates:
@@ -71,6 +71,7 @@ records. Then apply the migration through the proxy:
 ```powershell
 psql "host=127.0.0.1 port=5432 dbname=durable_journey user=journey sslmode=disable" -v ON_ERROR_STOP=1 -f migrations/001_apm_uniqueness_and_ownership.sql
 psql "host=127.0.0.1 port=5432 dbname=durable_journey user=journey sslmode=disable" -v ON_ERROR_STOP=1 -f migrations/002_group_apm_authorization.sql
+psql "host=127.0.0.1 port=5432 dbname=durable_journey user=journey sslmode=disable" -v ON_ERROR_STOP=1 -f migrations/003_architecture_aligned_states.sql
 ```
 
 The migration backfills legacy `owner_subject` values from the PoC's

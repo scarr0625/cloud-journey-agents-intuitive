@@ -36,7 +36,7 @@ def test_normal_journey_stops_for_approval_then_completes(service) -> None:
         "confidential customer data",
         "99.95% availability with disaster recovery",
     )
-    assert inventory["current_state"] == "INVENTORY_COMPLETE"
+    assert inventory["current_state"] == "ASSET_INVENTORY_COMPLETE"
     assert inventory["context"]["inventory"]["application_name"] == "Customer Orders API"
 
     waiting = service.generate_plan(
@@ -46,22 +46,53 @@ def test_normal_journey_stops_for_approval_then_completes(service) -> None:
         "no more than 15 minutes of cutover downtime; retain private connectivity",
     )
     assert waiting["current_state"] == "WAITING_FOR_APPROVAL"
-    assert waiting["version"] == 7
+    assert waiting["version"] == 8
     assert waiting["context"]["proposed_plan"]["provisioning"] == "simulated"
 
     external_decision = service.record_external_approval(journey_id, "reviewer")
     assert external_decision["current_state"] == "APPROVED"
-    assert external_decision["version"] == 8
+    assert external_decision["version"] == 9
 
     completed = service.resume_after_approval(journey_id)
     assert completed["current_state"] == "COMPLETED"
-    assert completed["version"] == 11
-    assert completed["state_path"][-4:] == [
+    assert completed["version"] == 17
+    assert completed["context"]["agent_identity"]["provider"] == "MyAccess MCP"
+    assert completed["context"]["app_factory"]["execution_backend"] == "Cloud Build MCP"
+    assert completed["state_path"][-9:] == [
         "APPROVED",
-        "PROVISIONING",
-        "VALIDATING_RESULT",
+        "PROVISIONING_AGENT_IDENTITY",
+        "AGENT_IDENTITY_READY",
+        "PREPARING_APP_FACTORY",
+        "APP_FACTORY_READY",
+        "SUBMITTING_CLOUD_BUILD",
+        "CLOUD_BUILD_RUNNING",
+        "VALIDATING_DEPLOYMENT",
         "COMPLETED",
     ]
+    catalog = [
+        "JourneyStarted",
+        "JourneyDataChanged",
+        "ChecklistCalculated",
+        "GovernanceTicketCreated",
+        "GovernanceStatusChanged",
+        "MyAccessRequestSubmitted",
+        "MyAccessStatusChanged",
+        "DependencyCompleted",
+        "ReadinessEvaluated",
+        "AppFactoryManifestPublished",
+        "ProvisioningStarted",
+        "ProvisioningStatusChanged",
+        "ProvisioningCompleted",
+        "JourneyTransitionedToBAU",
+    ]
+    emitted = [
+        event["event_type"]
+        for event in completed["history"]
+        if event["event_type"] in catalog
+    ]
+    assert list(dict.fromkeys(emitted)) == catalog
+    domain_events = completed["business_events"]
+    assert all(event["metadata"]["description"] == event["message"] for event in domain_events)
 
 
 def test_invalid_transition_does_not_update_database(session_factory) -> None:
@@ -87,7 +118,11 @@ def test_invalid_transition_does_not_update_database(session_factory) -> None:
     unchanged = machine.get_journey(journey.id)
     assert unchanged.status == "CREATED"
     assert unchanged.version == 1
-    assert len(machine.get_events(journey.id)) == 1
+    events = machine.get_events(journey.id)
+    assert [event.event_type for event in events] == [
+        "JOURNEY_CREATED",
+        "JourneyStarted",
+    ]
 
 
 def test_processing_state_can_fail_and_enter_retrying(session_factory) -> None:

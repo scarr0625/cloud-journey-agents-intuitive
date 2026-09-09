@@ -44,7 +44,58 @@ from cloud_journey.state_machine import (
     TransitionResult,
 )
 
-AGENT_ACTOR = Actor("AGENT", "project-factory-agent")
+ORCHESTRATOR_ACTOR = Actor("AGENT", "graph-workflow-orchestrator")
+APM_VALIDATION_AGENT_ACTOR = Actor("AGENT", "apm-validation-agent")
+CLOUD_SERVICES_AGENT_ACTOR = Actor("AGENT", "cloud-services-agent")
+AD_PROVISIONING_AGENT_ACTOR = Actor("AGENT", "ad-provisioning-agent")
+APP_FACTORY_HELPER_AGENT_ACTOR = Actor("AGENT", "app-factory-helper-agent")
+
+# Generic orchestration events remain attributable to the graph orchestrator.
+AGENT_ACTOR = ORCHESTRATOR_ACTOR
+EXECUTION_PIPELINE: dict[
+    JourneyState, tuple[JourneyState, Actor, dict[str, Any]]
+] = {
+    JourneyState.APPROVED: (
+        JourneyState.PROVISIONING_AGENT_IDENTITY,
+        AD_PROVISIONING_AGENT_ACTOR,
+        {"integration": "myaccess-mcp", "simulated": True},
+    ),
+    JourneyState.PROVISIONING_AGENT_IDENTITY: (
+        JourneyState.AGENT_IDENTITY_READY,
+        AD_PROVISIONING_AGENT_ACTOR,
+        {"integration": "myaccess-mcp", "simulated": True},
+    ),
+    JourneyState.AGENT_IDENTITY_READY: (
+        JourneyState.PREPARING_APP_FACTORY,
+        APP_FACTORY_HELPER_AGENT_ACTOR,
+        {"component": "app-factory", "simulated": True},
+    ),
+    JourneyState.PREPARING_APP_FACTORY: (
+        JourneyState.APP_FACTORY_READY,
+        APP_FACTORY_HELPER_AGENT_ACTOR,
+        {"component": "app-factory", "simulated": True},
+    ),
+    JourneyState.APP_FACTORY_READY: (
+        JourneyState.SUBMITTING_CLOUD_BUILD,
+        APP_FACTORY_HELPER_AGENT_ACTOR,
+        {"integration": "cloud-build-mcp", "simulated": True},
+    ),
+    JourneyState.SUBMITTING_CLOUD_BUILD: (
+        JourneyState.CLOUD_BUILD_RUNNING,
+        APP_FACTORY_HELPER_AGENT_ACTOR,
+        {"integration": "cloud-build-mcp", "simulated": True},
+    ),
+    JourneyState.CLOUD_BUILD_RUNNING: (
+        JourneyState.VALIDATING_DEPLOYMENT,
+        APP_FACTORY_HELPER_AGENT_ACTOR,
+        {"integration": "cloud-build-mcp", "simulated": True},
+    ),
+    JourneyState.VALIDATING_DEPLOYMENT: (
+        JourneyState.COMPLETED,
+        APP_FACTORY_HELPER_AGENT_ACTOR,
+        {"integration": "cloud-build-mcp", "simulated": True},
+    ),
+}
 SIMULATED_USER_STATE_KEY = "cloud_journey:simulated_user_name"
 T = TypeVar("T")
 
@@ -352,13 +403,13 @@ class JourneyService:
                 self.state_machine.transition(
                     journey.id,
                     JourneyState.VALIDATING_APM,
-                    actor=AGENT_ACTOR,
+                    actor=APM_VALIDATION_AGENT_ACTOR,
                     message="Started simulated APM validation",
                 ),
                 self.state_machine.transition(
                     journey.id,
                     JourneyState.APM_VALIDATED,
-                    actor=AGENT_ACTOR,
+                    actor=APM_VALIDATION_AGENT_ACTOR,
                     message="Simulated APM validation succeeded",
                     metadata={"apm_id": apm_id},
                 ),
@@ -372,10 +423,18 @@ class JourneyService:
     def continue_journey(self, journey_id: str) -> dict[str, Any]:
         """Compatibility shortcut; the conversational agent uses explicit steps."""
         pipeline = {
-            JourneyState.APM_VALIDATED: JourneyState.COLLECTING_INVENTORY,
-            JourneyState.COLLECTING_INVENTORY: JourneyState.INVENTORY_COMPLETE,
-            JourneyState.INVENTORY_COMPLETE: JourneyState.GENERATING_PLAN,
+            JourneyState.APM_VALIDATED: JourneyState.DISCOVERING_CLOUD_SERVICES,
+            JourneyState.DISCOVERING_CLOUD_SERVICES: JourneyState.COLLECTING_ASSET_INVENTORY,
+            JourneyState.COLLECTING_ASSET_INVENTORY: JourneyState.ASSET_INVENTORY_COMPLETE,
+            JourneyState.ASSET_INVENTORY_COMPLETE: JourneyState.GENERATING_PLAN,
             JourneyState.GENERATING_PLAN: JourneyState.WAITING_FOR_APPROVAL,
+        }
+        actors = {
+            JourneyState.DISCOVERING_CLOUD_SERVICES: CLOUD_SERVICES_AGENT_ACTOR,
+            JourneyState.COLLECTING_ASSET_INVENTORY: CLOUD_SERVICES_AGENT_ACTOR,
+            JourneyState.ASSET_INVENTORY_COMPLETE: CLOUD_SERVICES_AGENT_ACTOR,
+            JourneyState.GENERATING_PLAN: ORCHESTRATOR_ACTOR,
+            JourneyState.WAITING_FOR_APPROVAL: ORCHESTRATOR_ACTOR,
         }
 
         def action() -> list[TransitionResult]:
@@ -387,12 +446,12 @@ class JourneyService:
                 target = pipeline.get(current)
                 if target is None:
                     # Route the error through the central validator for a consistent error.
-                    target = JourneyState.COLLECTING_INVENTORY
+                    target = JourneyState.DISCOVERING_CLOUD_SERVICES
                 transitions.append(
                     self.state_machine.transition(
                         journey_id,
                         target,
-                        actor=AGENT_ACTOR,
+                        actor=actors[target],
                         message=f"Simulated step completed: {target.value}",
                     )
                 )
@@ -442,7 +501,7 @@ class JourneyService:
                 ],
                 "Record the application inventory after the owner provides these facts.",
             ),
-            JourneyState.INVENTORY_COMPLETE: (
+            JourneyState.ASSET_INVENTORY_COMPLETE: (
                 ["target platform", "migration objectives", "constraints"],
                 "Discuss options, then generate a proposed Cloud plan.",
             ),
@@ -505,20 +564,31 @@ class JourneyService:
                 transitions.append(
                     self.state_machine.transition(
                         journey_id,
-                        JourneyState.COLLECTING_INVENTORY,
-                        actor=AGENT_ACTOR,
-                        message="Started application discovery and inventory collection",
+                        JourneyState.DISCOVERING_CLOUD_SERVICES,
+                        actor=CLOUD_SERVICES_AGENT_ACTOR,
+                        message="Started cloud-service discovery",
                     )
                 )
-                current = JourneyState.COLLECTING_INVENTORY
+                current = JourneyState.DISCOVERING_CLOUD_SERVICES
+            if current == JourneyState.DISCOVERING_CLOUD_SERVICES:
+                transitions.append(
+                    self.state_machine.transition(
+                        journey_id,
+                        JourneyState.COLLECTING_ASSET_INVENTORY,
+                        actor=CLOUD_SERVICES_AGENT_ACTOR,
+                        message="Started application and asset inventory collection",
+                        metadata={"integration": "google-asset-inventory-mcp", "simulated": True},
+                    )
+                )
+                current = JourneyState.COLLECTING_ASSET_INVENTORY
             if current not in {
-                JourneyState.COLLECTING_INVENTORY,
-                JourneyState.INVENTORY_COMPLETE,
+                JourneyState.COLLECTING_ASSET_INVENTORY,
+                JourneyState.ASSET_INVENTORY_COMPLETE,
             }:
                 self.state_machine.transition(
                     journey_id,
-                    JourneyState.COLLECTING_INVENTORY,
-                    actor=AGENT_ACTOR,
+                    JourneyState.DISCOVERING_CLOUD_SERVICES,
+                    actor=CLOUD_SERVICES_AGENT_ACTOR,
                 )
             self.state_machine.merge_context(
                 journey_id,
@@ -526,13 +596,14 @@ class JourneyService:
                 actor=Actor("USER", supplied_by or journey.requested_by),
                 message="Application inventory supplied by an authorized group member",
             )
-            if current == JourneyState.COLLECTING_INVENTORY:
+            if current == JourneyState.COLLECTING_ASSET_INVENTORY:
                 transitions.append(
                     self.state_machine.transition(
                         journey_id,
-                        JourneyState.INVENTORY_COMPLETE,
-                        actor=AGENT_ACTOR,
-                        message="Application discovery and inventory are complete",
+                        JourneyState.ASSET_INVENTORY_COMPLETE,
+                        actor=CLOUD_SERVICES_AGENT_ACTOR,
+                        message="Cloud-service discovery and asset inventory are complete",
+                        metadata={"integration": "google-asset-inventory-mcp", "simulated": True},
                     )
                 )
             return transitions
@@ -564,13 +635,14 @@ class JourneyService:
         def action() -> list[TransitionResult]:
             transitions: list[TransitionResult] = []
             current = JourneyState(self.state_machine.get_journey(journey_id).status)
-            if current == JourneyState.INVENTORY_COMPLETE:
+            if current == JourneyState.ASSET_INVENTORY_COMPLETE:
                 transitions.append(
                     self.state_machine.transition(
                         journey_id,
                         JourneyState.GENERATING_PLAN,
-                        actor=AGENT_ACTOR,
+                        actor=ORCHESTRATOR_ACTOR,
                         message="Started generating a plan from captured application knowledge",
+                        metadata={"simulated": True},
                     )
                 )
                 current = JourneyState.GENERATING_PLAN
@@ -614,6 +686,32 @@ class JourneyService:
             note="The proposed plan is ready for independent approval; no resources were provisioned.",
         )
 
+    def _persist_execution_checkpoint(
+        self, journey_id: str, state: JourneyState, actor: Actor
+    ) -> None:
+        checkpoint_context: dict[JourneyState, dict[str, Any]] = {
+            JourneyState.AGENT_IDENTITY_READY: {
+                "agent_identity": {
+                    "provider": "MyAccess MCP",
+                    "status": "simulated_ready",
+                }
+            },
+            JourneyState.APP_FACTORY_READY: {
+                "app_factory": {
+                    "execution_backend": "Cloud Build MCP",
+                    "status": "simulated_ready",
+                }
+            },
+        }
+        updates = checkpoint_context.get(state)
+        if updates is not None:
+            self.state_machine.merge_context(
+                journey_id,
+                updates,
+                actor=actor,
+                message=f"Persisted simulated {state.value.lower()} checkpoint",
+            )
+
     def approve(self, journey_id: str, user_name: str) -> dict[str, Any]:
         """Compatibility API; Cloud Compass does not expose this to chat."""
         user = self._user(user_name)
@@ -639,27 +737,28 @@ class JourneyService:
                         },
                     )
                 )
-            pipeline = {
-                JourneyState.APPROVED: JourneyState.PROVISIONING,
-                JourneyState.PROVISIONING: JourneyState.VALIDATING_RESULT,
-                JourneyState.VALIDATING_RESULT: JourneyState.COMPLETED,
-            }
             while True:
                 current = JourneyState(self.state_machine.get_journey(journey_id).status)
                 if current == JourneyState.COMPLETED:
                     break
-                target = pipeline.get(current)
-                if target is None:
+                step = EXECUTION_PIPELINE.get(current)
+                if step is None:
                     # This deliberately fails at the state-machine boundary.
                     target = JourneyState.APPROVED
+                    actor = ORCHESTRATOR_ACTOR
+                    metadata: dict[str, Any] = {"simulated": True}
+                else:
+                    target, actor, metadata = step
                 transitions.append(
                     self.state_machine.transition(
                         journey_id,
                         target,
-                        actor=AGENT_ACTOR,
+                        actor=actor,
                         message=f"Simulated execution completed: {target.value}",
+                        metadata=metadata,
                     )
                 )
+                self._persist_execution_checkpoint(journey_id, target, actor)
             return transitions
 
         transitions = self._run_operation(journey_id, "APPROVE_JOURNEY", action)
@@ -824,30 +923,33 @@ class JourneyService:
 
     def resume_after_approval(self, journey_id: str) -> dict[str, Any]:
         """Resume simulated execution only after the database says APPROVED."""
-        pipeline = {
-            JourneyState.APPROVED: JourneyState.PROVISIONING,
-            JourneyState.PROVISIONING: JourneyState.VALIDATING_RESULT,
-            JourneyState.VALIDATING_RESULT: JourneyState.COMPLETED,
-        }
-
         def action() -> list[TransitionResult]:
             transitions: list[TransitionResult] = []
             while True:
                 current = JourneyState(self.state_machine.get_journey(journey_id).status)
                 if current == JourneyState.COMPLETED:
                     break
-                target = pipeline.get(current)
-                if target is None:
+                step = EXECUTION_PIPELINE.get(current)
+                if step is None:
                     # The central validator rejects execution without external approval.
-                    target = JourneyState.PROVISIONING
+                    target = JourneyState.PROVISIONING_AGENT_IDENTITY
+                    actor = AD_PROVISIONING_AGENT_ACTOR
+                    metadata: dict[str, Any] = {
+                        "integration": "myaccess-mcp",
+                        "simulated": True,
+                    }
+                else:
+                    target, actor, metadata = step
                 transitions.append(
                     self.state_machine.transition(
                         journey_id,
                         target,
-                        actor=AGENT_ACTOR,
+                        actor=actor,
                         message=f"Resumed after external approval: {target.value}",
+                        metadata=metadata,
                     )
                 )
+                self._persist_execution_checkpoint(journey_id, target, actor)
             return transitions
 
         transitions = self._run_operation(journey_id, "RESUME_AFTER_APPROVAL", action)
@@ -906,6 +1008,9 @@ class JourneyService:
                 if event.event_type in {"JOURNEY_CREATED", "STATE_TRANSITION"}
             ],
             "history": history,
+            "business_events": [
+                event for event in history if event["metadata"].get("domain_event")
+            ],
         }
         if note:
             response["note"] = note

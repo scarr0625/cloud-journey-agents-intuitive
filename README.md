@@ -5,12 +5,158 @@ state. Chat sessions and the ADK process are intentionally disposable: every
 status response is rebuilt from `journeys` and the append-only `journey_events`
 table.
 
+## How the PoC works: a normal sample flow
+
+Think of a Journey as one durable business request for one application, identified
+by its APM ID. The chat is only the conversational front end. PostgreSQL, not the
+chat history or the agent process, owns the request's current state, collected
+application facts, proposed plan, access group, and audit history.
+
+Here is the happy-path example using the seeded demo data:
+
+1. **Sam identifies himself and starts APM `100401`.** The PoC binds the simulated
+   identity `sam` to that ADK session. It then reads the database and confirms that
+   Sam belongs to `GROUP_1` and that APM `100401` is assigned to `GROUP_1`.
+2. **The Journey is created and its APM is validated.** PostgreSQL stores a new
+   Journey with a generated ID such as `J-12AB34CD`, its owning group, requester,
+   state, and version. Starting `100401` again does not create a second Journey;
+   an authorized group member receives the existing one.
+3. **Cloud Compass gathers application knowledge.** Sam describes the application,
+   environments, dependencies, data classification, and availability needs. Those
+   facts are saved in the Journey's durable context, so they survive a browser,
+   agent, or service restart.
+4. **Cloud Compass creates a proposed plan.** The PoC saves the plan and advances
+   the Journey to `WAITING_FOR_APPROVAL`. No infrastructure has been created; all
+   discovery, MCP, provisioning, and Cloud Build activity in this PoC is simulated.
+5. **A separate reviewer makes the decision.** Cloud Compass deliberately has no
+   approve or reject tool. The external approval backend verifies that `reviewer`
+   belongs to `CLOUD_JOURNEY_APPROVERS` and did not request the Journey, then writes
+   either `APPROVED` or `REJECTED` to the same database.
+6. **An approved Journey resumes.** Cloud Compass observes the durable approval and
+   simulates identity provisioning, App Factory preparation, Cloud Build, and
+   deployment validation. Each checkpoint is committed before the next one begins.
+7. **The Journey can be recovered later.** If ADK Web is restarted, Ivan can open a
+   new session and retrieve APM `100401` because Ivan is also in `GROUP_1`. A member
+   of `GROUP_2` receives the same non-disclosing response they would receive for an
+   unknown APM ID.
+
+In short:
+
+```text
+Conversation
+    -> database authorization
+    -> durable discovery and planning
+    -> independent human approval
+    -> resumable simulated execution
+    -> durable completion and audit history
+```
+
+### Main design points
+
+**Group-based Journey authorization.** Access is based on the intersection of two
+database relationships: the caller's rows in `access_group_members` and the APM's
+row in `apm_group_assignments`. The resulting group is copied to
+`journeys.access_group_id` when the Journey is created. Every Journey-specific ADK
+read or change checks that durable group boundary. `owner_subject` records who
+created the Journey for audit purposes, but it is not the access-control rule;
+members of the same group intentionally share access.
+
+**Privacy-preserving lookup behavior.** Cross-group and nonexistent APM lookups use
+the same denial message. The response does not expose whether another group's APM
+or Journey exists, nor its ID, requester, state, context, plan, or history.
+
+**A separate approval authorization boundary.** Project access and approval power
+are different permissions. `GROUP_1` or `GROUP_2` membership grants access to the
+group's Journeys. Only `CLOUD_JOURNEY_APPROVERS` membership grants approval-backend
+access, and a requester cannot approve their own Journey. Keeping approve/reject
+out of the agent tools demonstrates separation of duties instead of relying on a
+prompt instruction as a security boundary.
+
+**Database-backed durability.** `journeys` is the latest-state projection,
+`journey_events` is the actor-aware append-only history, and `journey_operations`
+records command outcomes. ADK session state only remembers the selected demo
+identity; it is not the source of Journey truth. After a restart, status is rebuilt
+from PostgreSQL.
+
+**Controlled state changes and concurrency.** All state changes go through one
+transition map. A database row lock and version check prevent conflicting actions
+from both succeeding—for example, simultaneous approval and rejection. The state
+update and its audit event commit in the same transaction.
+
+**One Journey per APM ID.** A database uniqueness constraint makes an APM ID global
+across chats and users. Repeated or concurrent starts by the authorized group return
+the same Journey rather than creating parallel business requests.
+
+**Clear PoC limits.** Named users and group membership are simulated; anyone who can
+open a new session can claim a demo identity. The integrations and resource changes
+are also simulated. Production would replace the claimed identity with verified SSO
+claims, connect the external systems, and use a callback, event, or durable timer for
+long approval waits.
+
+### Known gap: Google three-legged OAuth
+
+Google three-legged OAuth (3LO) is **not implemented in the current version**.
+There is no Google sign-in redirect, authorization-code exchange, verified ID
+token, access token, refresh token, consent record, or token refresh/revocation
+handling.
+
+The current identity flow is only a demonstration mechanism:
+
+```text
+User types "I am sam" in chat
+    -> the agent calls select_simulated_identity("sam")
+    -> the name is looked up in the hard-coded SIMULATED_USERS catalog
+    -> "sam" is stored in ADK ToolContext session state
+    -> database group membership for the string "sam" is used for authorization
+```
+
+The name cannot be changed within that one session, but it was never authenticated.
+A person can open another session and choose a different demo name. Consequently,
+the group policy and privacy behavior are useful PoC logic, but they are not a real
+security boundary until the caller identity is verified.
+
+The intended 3LO flow is:
+
+```text
+User opens Cloud Compass
+    -> application redirects to Google's authorization endpoint
+    -> user signs in and grants the requested consent
+    -> backend receives a one-time authorization code
+    -> backend exchanges the code and validates the returned identity
+    -> stable Google subject (sub) is bound to the application session
+    -> tools receive that trusted subject; the model never chooses it
+    -> trusted subject/group mapping is checked against the APM group
+```
+
+OAuth/OIDC should replace only the simulated identity input, not the durable Journey
+authorization model. The recommended boundary is to key membership by the verified,
+stable Google `sub` claim rather than a chat-provided display name or email. If the
+application must call Google APIs on the user's behalf, access and refresh tokens
+must remain in a server-side encrypted token store and must never be placed in the
+prompt, ADK session state, Journey context, or audit events.
+
+Google identity also does not by itself establish the PoC's business groups. After
+sign-in, the backend still needs a trusted source for APM access membership—either
+the existing `access_group_members` table keyed by Google subject, or a separately
+authorized and cached lookup/sync from the organization's group directory. The same
+principle applies to `CLOUD_JOURNEY_APPROVERS`: approval membership must come from a
+trusted backend claim or directory, never from chat text.
+
+| Concern | Current PoC | With Google 3LO |
+|---|---|---|
+| Who is the caller? | Chat-selected demo name | Verified Google subject from backend session |
+| Can the user impersonate another demo user? | Yes, by opening a new session | No, assuming correct token and session validation |
+| Where are groups resolved? | PostgreSQL rows keyed by demo name | Trusted directory or PostgreSQL rows keyed by verified subject |
+| Where are OAuth tokens stored? | Nowhere; no tokens exist | Encrypted server-side store, outside model-visible state |
+| What should the model receive? | Selected demo name | Minimal authorization result or trusted subject context, never raw tokens |
+
 ## What is implemented
 
 - Central transition validation in `cloud_journey/state_machine.py`
 - PostgreSQL `SELECT ... FOR UPDATE` plus a version-guarded update
 - One transaction per transition, numeric versions, and complete actor-aware audit history
-- Resumable simulated inventory, planning, provisioning, and validation stages
+- Resumable architecture-aligned discovery, identity, App Factory, Cloud Build,
+  and deployment-validation stages
 - Segregated approval boundary based on `CLOUD_JOURNEY_APPROVERS` membership
 - `journey_operations` records for command outcomes and future idempotency/retry work
 - Globally unique APM IDs enforced by the database
@@ -54,7 +200,7 @@ DATABASE_URL=postgresql+psycopg://journey:URL_ENCODED_PASSWORD@127.0.0.1:5432/du
 
 ### Recreate the Cloud SQL database from scratch
 
-The repository includes a baseline migration followed by the two incremental
+The repository includes a baseline migration followed by three incremental
 migrations. Stop any running agent that uses this database first. With the Cloud
 SQL Auth Proxy listening on `127.0.0.1:5432`, permanently delete and recreate
 only the `durable_journey` database by running:
@@ -90,6 +236,9 @@ The migration order is:
 3. `002_group_apm_authorization.sql` — creates and seeds `access_groups`,
    `access_group_members`, and `apm_group_assignments`, then assigns each
    Journey an `access_group_id`.
+4. `003_architecture_aligned_states.sql` — updates active Journey projections
+   from the original PoC state names to the architecture-aligned names. It
+   preserves history and appends an auditable migration transition.
 
 After recreation, start the agent:
 
@@ -164,7 +313,8 @@ This gives the intended behavior:
 
 For an existing database, run
 [`migrations/001_apm_uniqueness_and_ownership.sql`](migrations/001_apm_uniqueness_and_ownership.sql),
-then [`migrations/002_group_apm_authorization.sql`](migrations/002_group_apm_authorization.sql)
+then [`migrations/002_group_apm_authorization.sql`](migrations/002_group_apm_authorization.sql),
+and finally [`migrations/003_architecture_aligned_states.sql`](migrations/003_architecture_aligned_states.sql)
 before starting this version. The legacy `apm_group_access` table is no longer
 read or seeded by the application.
 
@@ -187,6 +337,98 @@ Cloud Compass can only poll the database and observe the backend decision. It ca
 resume provisioning after it reads `APPROVED`; it cannot create that state. The
 simulator waits 60 seconds by default. A real seven-day approval must use an
 event/callback or durable workflow timer rather than keeping an ADK request open.
+
+## Architecture-aligned Journey states
+
+The state machine records recoverable business progress, not every infrastructure
+hop. SSO authentication and xAPI security-context validation occur before a
+Journey is created. Agent Gateway routing, Model Armor, MCP clients, model calls,
+and session-state reads are control-plane or request-level activity; they should
+emit telemetry, but they are not durable Journey states. The Graph Workflow
+Orchestrator coordinates the following durable states in Cloud SQL:
+
+| Phase | Durable states | Architecture owner or boundary |
+|---|---|---|
+| Request and validation | `CREATED` -> `VALIDATING_APM` -> `APM_VALIDATED` | Graph Workflow Orchestrator and APM Validation Agent |
+| Discovery | `DISCOVERING_CLOUD_SERVICES` -> `COLLECTING_ASSET_INVENTORY` -> `ASSET_INVENTORY_COMPLETE` | Cloud Services Agent through the Google Asset Inventory MCP server |
+| Planning | `GENERATING_PLAN` -> `WAITING_FOR_APPROVAL` | Graph Workflow Orchestrator |
+| Human decision | `WAITING_FOR_APPROVAL` -> `APPROVED` or `REJECTED` | External approval backend; Cloud Compass can only observe the result |
+| Approved execution preparation | `APPROVED` -> `PROVISIONING_AGENT_IDENTITY` -> `AGENT_IDENTITY_READY` -> `PREPARING_APP_FACTORY` -> `APP_FACTORY_READY` | AD Provisioning Agent/MyAccess MCP, then App Factory Helper Agent |
+| Build and verification | `SUBMITTING_CLOUD_BUILD` -> `CLOUD_BUILD_RUNNING` -> `VALIDATING_DEPLOYMENT` -> `COMPLETED` | App Factory Helper Agent through the Cloud Build MCP server |
+| Recovery | Any processing state -> `FAILED` -> `RETRYING` -> a processing state | Graph Workflow Orchestrator, using durable state and event history |
+
+`APM_VALIDATED`, `ASSET_INVENTORY_COMPLETE`, `AGENT_IDENTITY_READY`, and
+`APP_FACTORY_READY` are stable resume checkpoints. The other nonterminal states
+represent work in progress. `COMPLETED` and `REJECTED` are terminal. The PoC
+simulates all MCP and provisioning operations and marks their audit metadata with
+`simulated=true`.
+
+### Sample durable flow
+
+An approved Journey follows this path:
+
+```text
+CREATED
+-> VALIDATING_APM
+-> APM_VALIDATED
+-> DISCOVERING_CLOUD_SERVICES
+-> COLLECTING_ASSET_INVENTORY
+-> ASSET_INVENTORY_COMPLETE
+-> GENERATING_PLAN
+-> WAITING_FOR_APPROVAL
+-> APPROVED
+-> PROVISIONING_AGENT_IDENTITY
+-> AGENT_IDENTITY_READY
+-> PREPARING_APP_FACTORY
+-> APP_FACTORY_READY
+-> SUBMITTING_CLOUD_BUILD
+-> CLOUD_BUILD_RUNNING
+-> VALIDATING_DEPLOYMENT
+-> COMPLETED
+```
+
+If the external reviewer rejects the plan, the path ends at `REJECTED`. If a
+processing step fails, the Journey moves to `FAILED`; an explicit retry moves it
+through `RETRYING` and back to the selected processing state. Every arrow is
+validated centrally and appended to `journey_events` in the same transaction as
+the current-state update.
+
+### Confluence-aligned business events
+
+The durable state names above describe how the orchestrator resumes work. The
+Confluence event catalog describes the business outcomes that other systems and
+people care about. The PoC now records both views in `journey_events`:
+
+- `JOURNEY_CREATED`, `STATE_TRANSITION`, and `CONTEXT_UPDATED` remain the detailed
+  internal audit records.
+- The CamelCase event names below are business events. They are exposed separately
+  as `business_events` in Journey status responses.
+- A business event and the state/context change that caused it are committed in the
+  same database transaction. Consumers cannot observe the event without its durable
+  result.
+
+| Business event | Confluence description | Emitted by this PoC when |
+|---|---|---|
+| `JourneyStarted` | New Journey created | The unique Journey row is created |
+| `JourneyDataChanged` | User/System Data updated | Inventory, plan, or checkpoint context is persisted |
+| `ChecklistCalculated` | Checklist Refreshed | Asset inventory reaches `ASSET_INVENTORY_COMPLETE` |
+| `GovernanceTicketCreated` | Governance Started | The proposed plan reaches `WAITING_FOR_APPROVAL` |
+| `GovernanceStatusChanged` | Approval Changed | The external backend records `APPROVED` or `REJECTED` |
+| `MyAccessRequestSubmitted` | Access Request Created | Execution enters `PROVISIONING_AGENT_IDENTITY` |
+| `MyAccessStatusChanged` | Access Updated | The simulated identity reaches `AGENT_IDENTITY_READY` |
+| `DependencyCompleted` | External dependency completed | Identity readiness allows App Factory preparation to begin |
+| `ReadinessEvaluated` | Readiness Decision Produced | App Factory preparation reaches its ready checkpoint |
+| `AppFactoryManifestPublished` | Manifest Generated | The simulated App Factory reaches `APP_FACTORY_READY` |
+| `ProvisioningStarted` | Deployment Started | The simulated Cloud Build submission begins |
+| `ProvisioningStatusChanged` | Deployment Changed | Cloud Build runs or deployment validation begins |
+| `ProvisioningCompleted` | Deployment Finished | Deployment validation reaches `COMPLETED` |
+| `JourneyTransitionedToBAU` | Journey Completed | The completed Journey transitions conceptually to BAU |
+
+Some events can occur more than once. For example, `JourneyDataChanged` is emitted
+for every durable context update and `ProvisioningStatusChanged` is emitted as the
+deployment moves through its running and validation checkpoints. The business-event
+metadata retains the actor, source state, target state, trigger, and relevant source
+details such as a rejection reason.
 
 ## ADK tools
 
@@ -259,8 +501,11 @@ Expected checkpoints:
 - The discovery question lists the application facts still needed.
 - The owner-provided inventory is persisted before any plan is generated.
 - Cloud Compass explains options using the captured inventory.
-- Plan generation produces `COLLECTING_INVENTORY -> INVENTORY_COMPLETE ->
-  GENERATING_PLAN -> WAITING_FOR_APPROVAL`, version 7.
+- Inventory capture produces `DISCOVERING_CLOUD_SERVICES ->
+  COLLECTING_ASSET_INVENTORY -> ASSET_INVENTORY_COMPLETE`.
+- Plan generation produces `GENERATING_PLAN -> WAITING_FOR_APPROVAL`, version 8.
+- Agent identity and App Factory preparation happen only after approval, before
+  the simulated Cloud Build submission.
 - Cloud Compass explains that the external approval backend owns the decision and
   no approval action is available in chat.
 
@@ -283,10 +528,15 @@ it observes that value and invokes the separate resume tool:
 
 ```text
 WAITING_FOR_APPROVAL
-→ APPROVED                  Actor: APPROVAL_BACKEND / reviewer
-→ PROVISIONING              Actor: AGENT / project-factory-agent
-→ VALIDATING_RESULT         Actor: AGENT / project-factory-agent
-→ COMPLETED                 Actor: AGENT / project-factory-agent
+-> APPROVED                   Actor: APPROVAL_BACKEND / reviewer
+-> PROVISIONING_AGENT_IDENTITY Actor: AGENT / ad-provisioning-agent
+-> AGENT_IDENTITY_READY        Actor: AGENT / ad-provisioning-agent
+-> PREPARING_APP_FACTORY       Actor: AGENT / app-factory-helper-agent
+-> APP_FACTORY_READY           Actor: AGENT / app-factory-helper-agent
+-> SUBMITTING_CLOUD_BUILD     Actor: AGENT / app-factory-helper-agent
+-> CLOUD_BUILD_RUNNING        Actor: AGENT / app-factory-helper-agent
+-> VALIDATING_DEPLOYMENT      Actor: AGENT / app-factory-helper-agent
+-> COMPLETED                  Actor: AGENT / app-factory-helper-agent
 ```
 
 ### Demo 2: independent reviewer rejects with a persisted reason

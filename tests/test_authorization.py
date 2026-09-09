@@ -34,7 +34,7 @@ def test_developer_cannot_approve_but_reviewer_can(service) -> None:
 
     denied_status = service.status(journey_id)
     assert denied_status["current_state"] == "WAITING_FOR_APPROVAL"
-    assert denied_status["version"] == 7
+    assert denied_status["version"] == 8
     denied_event = denied_status["history"][-1]
     assert denied_event["event_type"] == "AUTHORIZATION_DENIED"
     assert denied_event["actor_id"] == "developer"
@@ -77,10 +77,17 @@ def test_reviewer_can_reject_and_reason_is_persisted(service) -> None:
     result = service.record_external_rejection(journey_id, "reviewer", reason)
 
     assert result["current_state"] == "REJECTED"
-    event = result["history"][-1]
+    event = next(
+        event
+        for event in reversed(result["history"])
+        if event["event_type"] == "STATE_TRANSITION"
+    )
     assert event["from_state"] == "WAITING_FOR_APPROVAL"
     assert event["to_state"] == "REJECTED"
     assert event["actor_type"] == "APPROVAL_BACKEND"
     assert event["actor_id"] == "reviewer"
     assert event["message"] == reason
     assert event["metadata"]["rejection_reason"] == reason
+    governance_event = result["business_events"][-1]
+    assert governance_event["event_type"] == "GovernanceStatusChanged"
+    assert governance_event["metadata"]["rejection_reason"] == reason

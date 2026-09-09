@@ -27,47 +27,135 @@ class JourneyState(str, Enum):
     CREATED = "CREATED"
     VALIDATING_APM = "VALIDATING_APM"
     APM_VALIDATED = "APM_VALIDATED"
-    COLLECTING_INVENTORY = "COLLECTING_INVENTORY"
-    INVENTORY_COMPLETE = "INVENTORY_COMPLETE"
+    DISCOVERING_CLOUD_SERVICES = "DISCOVERING_CLOUD_SERVICES"
+    COLLECTING_ASSET_INVENTORY = "COLLECTING_ASSET_INVENTORY"
+    ASSET_INVENTORY_COMPLETE = "ASSET_INVENTORY_COMPLETE"
+    PROVISIONING_AGENT_IDENTITY = "PROVISIONING_AGENT_IDENTITY"
+    AGENT_IDENTITY_READY = "AGENT_IDENTITY_READY"
+    PREPARING_APP_FACTORY = "PREPARING_APP_FACTORY"
+    APP_FACTORY_READY = "APP_FACTORY_READY"
     GENERATING_PLAN = "GENERATING_PLAN"
     WAITING_FOR_APPROVAL = "WAITING_FOR_APPROVAL"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
-    PROVISIONING = "PROVISIONING"
-    VALIDATING_RESULT = "VALIDATING_RESULT"
+    SUBMITTING_CLOUD_BUILD = "SUBMITTING_CLOUD_BUILD"
+    CLOUD_BUILD_RUNNING = "CLOUD_BUILD_RUNNING"
+    VALIDATING_DEPLOYMENT = "VALIDATING_DEPLOYMENT"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     RETRYING = "RETRYING"
 
 
+@dataclass(frozen=True)
+class DomainEventDefinition:
+    event_type: str
+    description: str
+
+
+JOURNEY_STARTED_EVENT = DomainEventDefinition(
+    "JourneyStarted", "New Journey created"
+)
+JOURNEY_DATA_CHANGED_EVENT = DomainEventDefinition(
+    "JourneyDataChanged", "User/System Data updated"
+)
+
+# Business events from the Journey event catalog. These are emitted alongside
+# the lower-level STATE_TRANSITION audit event at the durable checkpoint that
+# represents the business outcome.
+DOMAIN_EVENTS_BY_STATE: dict[JourneyState, tuple[DomainEventDefinition, ...]] = {
+    JourneyState.ASSET_INVENTORY_COMPLETE: (
+        DomainEventDefinition("ChecklistCalculated", "Checklist Refreshed"),
+    ),
+    JourneyState.WAITING_FOR_APPROVAL: (
+        DomainEventDefinition("GovernanceTicketCreated", "Governance Started"),
+    ),
+    JourneyState.APPROVED: (
+        DomainEventDefinition("GovernanceStatusChanged", "Approval Changed"),
+    ),
+    JourneyState.REJECTED: (
+        DomainEventDefinition("GovernanceStatusChanged", "Approval Changed"),
+    ),
+    JourneyState.PROVISIONING_AGENT_IDENTITY: (
+        DomainEventDefinition("MyAccessRequestSubmitted", "Access Request Created"),
+    ),
+    JourneyState.AGENT_IDENTITY_READY: (
+        DomainEventDefinition("MyAccessStatusChanged", "Access Updated"),
+    ),
+    JourneyState.PREPARING_APP_FACTORY: (
+        DomainEventDefinition(
+            "DependencyCompleted", "External dependency completed"
+        ),
+    ),
+    JourneyState.APP_FACTORY_READY: (
+        DomainEventDefinition("ReadinessEvaluated", "Readiness Decision Produced"),
+        DomainEventDefinition(
+            "AppFactoryManifestPublished", "Manifest Generated"
+        ),
+    ),
+    JourneyState.SUBMITTING_CLOUD_BUILD: (
+        DomainEventDefinition("ProvisioningStarted", "Deployment Started"),
+    ),
+    JourneyState.CLOUD_BUILD_RUNNING: (
+        DomainEventDefinition("ProvisioningStatusChanged", "Deployment Changed"),
+    ),
+    JourneyState.VALIDATING_DEPLOYMENT: (
+        DomainEventDefinition("ProvisioningStatusChanged", "Deployment Changed"),
+    ),
+    JourneyState.COMPLETED: (
+        DomainEventDefinition("ProvisioningCompleted", "Deployment Finished"),
+        DomainEventDefinition("JourneyTransitionedToBAU", "Journey Completed"),
+    ),
+}
+
+
 PROCESSING_STATES = {
     JourneyState.VALIDATING_APM,
-    JourneyState.COLLECTING_INVENTORY,
+    JourneyState.DISCOVERING_CLOUD_SERVICES,
+    JourneyState.COLLECTING_ASSET_INVENTORY,
+    JourneyState.PROVISIONING_AGENT_IDENTITY,
+    JourneyState.PREPARING_APP_FACTORY,
     JourneyState.GENERATING_PLAN,
-    JourneyState.PROVISIONING,
-    JourneyState.VALIDATING_RESULT,
+    JourneyState.SUBMITTING_CLOUD_BUILD,
+    JourneyState.CLOUD_BUILD_RUNNING,
+    JourneyState.VALIDATING_DEPLOYMENT,
 }
 
 ALLOWED_TRANSITIONS: dict[JourneyState, frozenset[JourneyState]] = {
     JourneyState.CREATED: frozenset({JourneyState.VALIDATING_APM}),
     JourneyState.VALIDATING_APM: frozenset({JourneyState.APM_VALIDATED, JourneyState.FAILED}),
-    JourneyState.APM_VALIDATED: frozenset({JourneyState.COLLECTING_INVENTORY}),
-    JourneyState.COLLECTING_INVENTORY: frozenset(
-        {JourneyState.INVENTORY_COMPLETE, JourneyState.FAILED}
+    JourneyState.APM_VALIDATED: frozenset({JourneyState.DISCOVERING_CLOUD_SERVICES}),
+    JourneyState.DISCOVERING_CLOUD_SERVICES: frozenset(
+        {JourneyState.COLLECTING_ASSET_INVENTORY, JourneyState.FAILED}
     ),
-    JourneyState.INVENTORY_COMPLETE: frozenset({JourneyState.GENERATING_PLAN}),
+    JourneyState.COLLECTING_ASSET_INVENTORY: frozenset(
+        {JourneyState.ASSET_INVENTORY_COMPLETE, JourneyState.FAILED}
+    ),
+    JourneyState.ASSET_INVENTORY_COMPLETE: frozenset({JourneyState.GENERATING_PLAN}),
+    JourneyState.PROVISIONING_AGENT_IDENTITY: frozenset(
+        {JourneyState.AGENT_IDENTITY_READY, JourneyState.FAILED}
+    ),
+    JourneyState.AGENT_IDENTITY_READY: frozenset(
+        {JourneyState.PREPARING_APP_FACTORY}
+    ),
+    JourneyState.PREPARING_APP_FACTORY: frozenset(
+        {JourneyState.APP_FACTORY_READY, JourneyState.FAILED}
+    ),
+    JourneyState.APP_FACTORY_READY: frozenset({JourneyState.SUBMITTING_CLOUD_BUILD}),
     JourneyState.GENERATING_PLAN: frozenset(
         {JourneyState.WAITING_FOR_APPROVAL, JourneyState.FAILED}
     ),
     JourneyState.WAITING_FOR_APPROVAL: frozenset(
         {JourneyState.APPROVED, JourneyState.REJECTED}
     ),
-    JourneyState.APPROVED: frozenset({JourneyState.PROVISIONING}),
+    JourneyState.APPROVED: frozenset({JourneyState.PROVISIONING_AGENT_IDENTITY}),
     JourneyState.REJECTED: frozenset(),
-    JourneyState.PROVISIONING: frozenset(
-        {JourneyState.VALIDATING_RESULT, JourneyState.FAILED}
+    JourneyState.SUBMITTING_CLOUD_BUILD: frozenset(
+        {JourneyState.CLOUD_BUILD_RUNNING, JourneyState.FAILED}
     ),
-    JourneyState.VALIDATING_RESULT: frozenset(
+    JourneyState.CLOUD_BUILD_RUNNING: frozenset(
+        {JourneyState.VALIDATING_DEPLOYMENT, JourneyState.FAILED}
+    ),
+    JourneyState.VALIDATING_DEPLOYMENT: frozenset(
         {JourneyState.COMPLETED, JourneyState.FAILED}
     ),
     JourneyState.COMPLETED: frozenset(),
@@ -142,6 +230,33 @@ class StateMachine:
     def __init__(self, session_factory: sessionmaker[Session]):
         self._session_factory = session_factory
 
+    @staticmethod
+    def _domain_event(
+        *,
+        journey_id: str,
+        definition: DomainEventDefinition,
+        from_state: str | None,
+        to_state: str,
+        actor: Actor,
+        trigger: str,
+        source_metadata: dict[str, Any] | None = None,
+    ) -> JourneyEvent:
+        return JourneyEvent(
+            journey_id=journey_id,
+            event_type=definition.event_type,
+            from_state=from_state,
+            to_state=to_state,
+            actor_type=actor.actor_type,
+            actor_id=actor.actor_id,
+            message=definition.description,
+            event_metadata={
+                **(source_metadata or {}),
+                "domain_event": True,
+                "description": definition.description,
+                "trigger": trigger,
+            },
+        )
+
     def create_journey(
         self,
         *,
@@ -180,6 +295,20 @@ class StateMachine:
                         actor_id=requested_by,
                         message=f"Journey created for APM {apm_id}",
                         event_metadata={},
+                    )
+                )
+                session.add(
+                    self._domain_event(
+                        journey_id=journey.id,
+                        definition=JOURNEY_STARTED_EVENT,
+                        from_state=None,
+                        to_state=JourneyState.CREATED.value,
+                        actor=Actor("USER", requested_by),
+                        trigger="JOURNEY_CREATED",
+                        source_metadata={
+                            "apm_id": apm_id,
+                            "access_group_id": access_group_id,
+                        },
                     )
                 )
         except IntegrityError as exc:
@@ -264,6 +393,18 @@ class StateMachine:
                     event_metadata=metadata or {},
                 )
             )
+            session.add_all(
+                self._domain_event(
+                    journey_id=journey_id,
+                    definition=definition,
+                    from_state=from_state.value,
+                    to_state=to_state.value,
+                    actor=actor,
+                    trigger="STATE_TRANSITION",
+                    source_metadata=metadata,
+                )
+                for definition in DOMAIN_EVENTS_BY_STATE.get(to_state, ())
+            )
             return TransitionResult(journey_id, from_state, to_state, next_version)
 
     def record_event(
@@ -324,6 +465,17 @@ class StateMachine:
                     actor_id=actor.actor_id,
                     message=message,
                     event_metadata={"updated_sections": sorted(updates)},
+                )
+            )
+            session.add(
+                self._domain_event(
+                    journey_id=journey_id,
+                    definition=JOURNEY_DATA_CHANGED_EVENT,
+                    from_state=journey.status,
+                    to_state=journey.status,
+                    actor=actor,
+                    trigger="CONTEXT_UPDATED",
+                    source_metadata={"updated_sections": sorted(updates)},
                 )
             )
             return merged

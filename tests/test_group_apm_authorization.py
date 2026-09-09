@@ -59,7 +59,7 @@ def test_same_group_member_can_read_existing_journey(service, monkeypatch) -> No
 
     assert identity["apm_group"] == "GROUP_1"
     assert identity["available_apm_ids"] == ["100401", "100402"]
-    assert updated["current_state"] == "INVENTORY_COMPLETE"
+    assert updated["current_state"] == "ASSET_INVENTORY_COMPLETE"
     assert status["ok"] is True
     assert status["journey_id"] == created["journey_id"]
     assert status["access_group_id"] == "GROUP_1"

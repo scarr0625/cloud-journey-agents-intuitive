@@ -22,7 +22,7 @@ def test_state_survives_engine_and_service_restart(engine, service) -> None:
 
     recovered = restarted_service.status(journey_id)
     assert recovered["current_state"] == "WAITING_FOR_APPROVAL"
-    assert recovered["version"] == 7
+    assert recovered["version"] == 8
     assert recovered["requested_by"] == "sam"
     restarted_engine.dispose()
 
@@ -37,26 +37,35 @@ def test_full_audit_history_distinguishes_user_and_agent(service) -> None:
         "CREATED",
         "VALIDATING_APM",
         "APM_VALIDATED",
-        "COLLECTING_INVENTORY",
-        "INVENTORY_COMPLETE",
+        "DISCOVERING_CLOUD_SERVICES",
+        "COLLECTING_ASSET_INVENTORY",
+        "ASSET_INVENTORY_COMPLETE",
         "GENERATING_PLAN",
         "WAITING_FOR_APPROVAL",
         "APPROVED",
-        "PROVISIONING",
-        "VALIDATING_RESULT",
+        "PROVISIONING_AGENT_IDENTITY",
+        "AGENT_IDENTITY_READY",
+        "PREPARING_APP_FACTORY",
+        "APP_FACTORY_READY",
+        "SUBMITTING_CLOUD_BUILD",
+        "CLOUD_BUILD_RUNNING",
+        "VALIDATING_DEPLOYMENT",
         "COMPLETED",
     ]
     approval = next(
         event for event in result["history"] if event["to_state"] == "APPROVED"
     )
-    provisioning = next(
-        event for event in result["history"] if event["to_state"] == "PROVISIONING"
+    cloud_build = next(
+        event
+        for event in result["history"]
+        if event["to_state"] == "SUBMITTING_CLOUD_BUILD"
     )
     assert (approval["actor_type"], approval["actor_id"]) == (
         "APPROVAL_BACKEND",
         "reviewer",
     )
-    assert (provisioning["actor_type"], provisioning["actor_id"]) == (
+    assert (cloud_build["actor_type"], cloud_build["actor_id"]) == (
         "AGENT",
-        "project-factory-agent",
+        "app-factory-helper-agent",
     )
+    assert cloud_build["metadata"]["integration"] == "cloud-build-mcp"
