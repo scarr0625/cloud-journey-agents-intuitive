@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
-from orchestrator_agent.cloud_journey.state_machine import (
+from orchestrator_agent.app.cloud_journey.state_machine import (
     ConcurrentTransition,
     InvalidTransition,
 )

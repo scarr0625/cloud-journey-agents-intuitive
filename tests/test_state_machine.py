@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from orchestrator_agent.cloud_journey.models import AccessGroup
-from orchestrator_agent.cloud_journey.state_machine import (
+from orchestrator_agent.app.cloud_journey.models import AccessGroup
+from orchestrator_agent.app.cloud_journey.state_machine import (
     Actor,
     InvalidTransition,
     JourneyState,

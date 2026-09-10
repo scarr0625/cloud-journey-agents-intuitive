@@ -28,11 +28,11 @@ from google.genai import types
 from google.oauth2 import id_token
 from pydantic import BaseModel, Field
 
-from orchestrator_agent.cloud_journey.capability import (
+from .cloud_journey.capability import (
     DURABLE_JOURNEY_INSTRUCTION,
     DURABLE_JOURNEY_TOOLS,
 )
-from orchestrator_agent.cloud_journey.identity import verified_identity_state
+from .cloud_journey.identity import verified_identity_state
 
 APP_NAME = "orchestrator"
 MODEL = os.environ.get("ORCHESTRATOR_MODEL", "gemini-3.6-flash")

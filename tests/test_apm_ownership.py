@@ -5,13 +5,13 @@ from dataclasses import dataclass, field
 import pytest
 from google.adk.tools import FunctionTool
 
-from orchestrator_agent.cloud_journey import tools
-from orchestrator_agent.cloud_journey.identity import verified_identity_state
-from orchestrator_agent.cloud_journey.state_machine import (
+from orchestrator_agent.app.cloud_journey import tools
+from orchestrator_agent.app.cloud_journey.identity import verified_identity_state
+from orchestrator_agent.app.cloud_journey.state_machine import (
     DuplicateApmId,
     JourneyPersistenceError,
 )
-from orchestrator_agent.cloud_journey.tools import ApmAccessDenied
+from orchestrator_agent.app.cloud_journey.tools import ApmAccessDenied
 from orchestrator_agent.app.main import root_agent
 
 
