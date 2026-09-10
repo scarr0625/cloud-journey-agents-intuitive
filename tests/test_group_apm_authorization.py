@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import delete
 
 from cloud_journey import tools
+from cloud_journey.identity import verified_identity_state
 from cloud_journey.models import AccessGroupMember
 from cloud_journey.tools import ApmAccessDenied
 
@@ -14,6 +15,19 @@ from cloud_journey.tools import ApmAccessDenied
 class ToolContextStub:
     user_id: str
     state: dict[str, str] = field(default_factory=dict)
+
+
+def verified_context(subject: str) -> ToolContextStub:
+    return ToolContextStub(
+        subject,
+        verified_identity_state(
+            {
+                "subject": subject,
+                "email": f"{subject}@example.com",
+                "name": subject.title(),
+            }
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -39,11 +53,10 @@ def test_start_enforces_group_to_apm_mapping(
 
 def test_same_group_member_can_read_existing_journey(service, monkeypatch) -> None:
     monkeypatch.setattr(tools, "get_service", lambda: service)
-    sam_session = ToolContextStub("runtime-subject-sam")
-    ivan_session = ToolContextStub("runtime-subject-ivan")
+    sam_session = verified_context("sam")
+    ivan_session = verified_context("ivan")
 
-    created = tools.start_journey("100401", "sam", sam_session)
-    identity = tools.select_simulated_identity("ivan", ivan_session)
+    created = tools.start_journey("100401", sam_session)
     updated = tools.record_application_inventory(
         created["journey_id"],
         "Shared application",
@@ -57,8 +70,8 @@ def test_same_group_member_can_read_existing_journey(service, monkeypatch) -> No
     )
     status = tools.get_journey_status_by_apm_id("100401", ivan_session)
 
-    assert identity["apm_group"] == "GROUP_1"
-    assert identity["available_apm_ids"] == ["100401", "100402"]
+    assert created["requested_by"] == "sam"
+    assert created["requested_by_email"] == "sam@example.com"
     assert updated["current_state"] == "ASSET_INVENTORY_COMPLETE"
     assert status["ok"] is True
     assert status["journey_id"] == created["journey_id"]
@@ -69,27 +82,34 @@ def test_same_group_member_can_read_existing_journey(service, monkeypatch) -> No
     assert inventory_event["actor_id"] == "ivan"
 
 
-def test_session_identity_is_required_and_cannot_be_switched(
+def test_verified_identity_is_required_and_must_match_runtime_subject(
     service, monkeypatch
 ) -> None:
     monkeypatch.setattr(tools, "get_service", lambda: service)
     session = ToolContextStub("anonymous-runtime-subject")
+    mismatched = ToolContextStub(
+        "sam",
+        verified_identity_state(
+            {
+                "subject": "abdur",
+                "email": "abdur@example.com",
+                "name": "Abdur",
+            }
+        ),
+    )
 
     missing = tools.get_journey_status_by_apm_id("100401", session)
-    selected = tools.select_simulated_identity("sam", session)
-    switched = tools.select_simulated_identity("abdur", session)
+    forged = tools.get_journey_status_by_apm_id("100401", mismatched)
 
     assert missing["status_code"] == 401
-    assert missing["error"] == "SimulatedIdentityRequired"
-    assert selected["user_name"] == "sam"
-    assert switched["status_code"] == 403
-    assert switched["error"] == "SimulatedIdentityConflict"
+    assert missing["error"] == "VerifiedIdentityRequired"
+    assert forged["status_code"] == 401
+    assert forged["error"] == "VerifiedIdentityRequired"
 
 
 def test_unmapped_and_cross_group_apm_have_same_denial(service, monkeypatch) -> None:
     monkeypatch.setattr(tools, "get_service", lambda: service)
-    session = ToolContextStub("runtime-subject-abdur")
-    tools.select_simulated_identity("abdur", session)
+    session = verified_context("abdur")
 
     cross_group = tools.get_journey_status_by_apm_id("100401", session)
     unmapped = tools.get_journey_status_by_apm_id("999999", session)

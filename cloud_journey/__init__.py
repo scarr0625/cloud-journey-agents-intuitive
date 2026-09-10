@@ -1,6 +1,5 @@
-"""Durable Cloud Journey proof of concept and ADK discovery package."""
+"""Durable Cloud Journey state and orchestration capability."""
 
-from cloud_journey import agent
 from cloud_journey.state_machine import JourneyState
 
-__all__ = ["JourneyState", "agent"]
+__all__ = ["JourneyState"]

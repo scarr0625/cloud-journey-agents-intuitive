@@ -7,7 +7,7 @@ ALTER TABLE journeys
     ADD COLUMN IF NOT EXISTS owner_subject VARCHAR(256);
 
 -- Legacy PoC rows used requested_by as the simulated identity. Replace these
--- values with the stable Agent Runtime user_id where it differs.
+-- values with the stable authenticated runtime user ID where it differs.
 UPDATE journeys
 SET owner_subject = requested_by
 WHERE owner_subject IS NULL;

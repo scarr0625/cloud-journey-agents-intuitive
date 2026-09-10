@@ -1,9 +1,24 @@
-# Durable Cloud Journey PoC
+# Durable Cloud Journey Orchestrator PoC
 
-A local-first Google ADK agent backed by PostgreSQL for authoritative business
-state. Chat sessions and the ADK process are intentionally disposable: every
-status response is rebuilt from `journeys` and the append-only `journey_events`
-table.
+A main Google ADK orchestrator that routes application and infrastructure
+questions to specialist agents and directly owns a PostgreSQL-backed Journey
+lifecycle. The durable Journey is a capability of the orchestrator, not an
+independent agent. Chat sessions and the ADK process remain disposable: every
+status response can be rebuilt from `journeys` and the append-only
+`journey_events` table.
+
+```text
+User / HTTP playground
+          |
+          v
+Main Orchestrator
+    |           |-------------------------------|
+    v           v                               v
+APM Agent   Asset Inventory Agent   Durable Journey capability
+                                                |
+                                                v
+                                  Cloud SQL state + audit history
+```
 
 ## How the PoC works: a normal sample flow
 
@@ -14,9 +29,9 @@ application facts, proposed plan, access group, and audit history.
 
 Here is the happy-path example using the seeded demo data:
 
-1. **Sam identifies himself and starts APM `100401`.** The PoC binds the simulated
-   identity `sam` to that ADK session. It then reads the database and confirms that
-   Sam belongs to `GROUP_1` and that APM `100401` is assigned to `GROUP_1`.
+1. **Sam signs in with Google and starts APM `100401`.** The HTTP layer verifies
+   Sam's Google token and binds its stable subject to the ADK session. PostgreSQL
+   confirms that subject belongs to `GROUP_1` and APM `100401` is assigned there.
 2. **The Journey is created and its APM is validated.** PostgreSQL stores a new
    Journey with a generated ID such as `J-12AB34CD`, its owning group, requester,
    state, and version. Starting `100401` again does not create a second Journey;
@@ -35,10 +50,9 @@ Here is the happy-path example using the seeded demo data:
 6. **An approved Journey resumes.** Cloud Compass observes the durable approval and
    simulates identity provisioning, App Factory preparation, Cloud Build, and
    deployment validation. Each checkpoint is committed before the next one begins.
-7. **The Journey can be recovered later.** If ADK Web is restarted, Ivan can open a
-   new session and retrieve APM `100401` because Ivan is also in `GROUP_1`. A member
-   of `GROUP_2` receives the same non-disclosing response they would receive for an
-   unknown APM ID.
+7. **The Journey can be recovered later.** If Cloud Run is restarted, another
+   verified subject in `GROUP_1` can retrieve APM `100401`. A verified member of
+   `GROUP_2` receives the same non-disclosing response as for an unknown APM ID.
 
 In short:
 
@@ -74,9 +88,9 @@ prompt instruction as a security boundary.
 
 **Database-backed durability.** `journeys` is the latest-state projection,
 `journey_events` is the actor-aware append-only history, and `journey_operations`
-records command outcomes. ADK session state only remembers the selected demo
-identity; it is not the source of Journey truth. After a restart, status is rebuilt
-from PostgreSQL.
+records command outcomes. ADK session state contains only the verified Google
+subject, email, and display name; it never contains the raw ID token and is not the
+source of Journey truth. After a restart, status is rebuilt from PostgreSQL.
 
 **Controlled state changes and concurrency.** All state changes go through one
 transition map. A database row lock and version check prevent conflicting actions
@@ -87,53 +101,35 @@ update and its audit event commit in the same transaction.
 across chats and users. Repeated or concurrent starts by the authorized group return
 the same Journey rather than creating parallel business requests.
 
-**Clear PoC limits.** Named users and group membership are simulated; anyone who can
-open a new session can claim a demo identity. The integrations and resource changes
-are also simulated. Production would replace the claimed identity with verified SSO
-claims, connect the external systems, and use a callback, event, or durable timer for
-long approval waits.
+**Clear PoC limits.** Google authenticates the user, while business authorization
+still depends on administrator-managed `access_group_members` rows keyed by the
+verified Google subject. Integrations and resource changes remain simulated. A
+production implementation should synchronize groups from a trusted directory,
+connect the external systems, and use a callback, event, or durable timer for long
+approval waits.
 
-### Known gap: Google three-legged OAuth
+### Verified Google identity boundary
 
-Google three-legged OAuth (3LO) is **not implemented in the current version**.
-There is no Google sign-in redirect, authorization-code exchange, verified ID
-token, access token, refresh token, consent record, or token refresh/revocation
-handling.
-
-The current identity flow is only a demonstration mechanism:
-
-```text
-User types "I am sam" in chat
-    -> the agent calls select_simulated_identity("sam")
-    -> the name is looked up in the hard-coded SIMULATED_USERS catalog
-    -> "sam" is stored in ADK ToolContext session state
-    -> database group membership for the string "sam" is used for authorization
-```
-
-The name cannot be changed within that one session, but it was never authenticated.
-A person can open another session and choose a different demo name. Consequently,
-the group policy and privacy behavior are useful PoC logic, but they are not a real
-security boundary until the caller identity is verified.
-
-The intended 3LO flow is:
+The Cloud Run HTTP orchestrator verifies a Google Identity Services ID token,
+including its audience, verified email, and stable `sub` claim. The verified
+claims are injected into ADK session state by server code and are not model tool
+arguments:
 
 ```text
-User opens Cloud Compass
-    -> application redirects to Google's authorization endpoint
-    -> user signs in and grants the requested consent
-    -> backend receives a one-time authorization code
-    -> backend exchanges the code and validates the returned identity
-    -> stable Google subject (sub) is bound to the application session
-    -> tools receive that trusted subject; the model never chooses it
-    -> trusted subject/group mapping is checked against the APM group
+Browser sends Google ID token in X-User-Authorization
+    -> HTTP layer verifies the token for this OAuth client
+    -> verified Google sub becomes ADK user_id
+    -> sub, verified email, and display name enter model-hidden session state
+    -> Journey tools verify state sub == ToolContext.user_id
+    -> access_group_members is queried with the verified sub
+    -> the APM-to-group mapping decides access
 ```
 
-OAuth/OIDC should replace only the simulated identity input, not the durable Journey
-authorization model. The recommended boundary is to key membership by the verified,
-stable Google `sub` claim rather than a chat-provided display name or email. If the
-application must call Google APIs on the user's behalf, access and refresh tokens
-must remain in a server-side encrypted token store and must never be placed in the
-prompt, ADK session state, Journey context, or audit events.
+`start_journey` has no user-name parameter, and there is no identity-selection
+tool. A prompt such as "I am another user" cannot change authorization. Google
+authentication alone grants no APM access: an administrator must map the verified
+subject to a business group in PostgreSQL. Raw Google tokens are request-scoped
+and are not stored in ADK state, Journey context, or audit events.
 
 Google identity also does not by itself establish the PoC's business groups. After
 sign-in, the backend still needs a trusted source for APM access membership—either
@@ -142,13 +138,8 @@ authorized and cached lookup/sync from the organization's group directory. The s
 principle applies to `CLOUD_JOURNEY_APPROVERS`: approval membership must come from a
 trusted backend claim or directory, never from chat text.
 
-| Concern | Current PoC | With Google 3LO |
-|---|---|---|
-| Who is the caller? | Chat-selected demo name | Verified Google subject from backend session |
-| Can the user impersonate another demo user? | Yes, by opening a new session | No, assuming correct token and session validation |
-| Where are groups resolved? | PostgreSQL rows keyed by demo name | Trusted directory or PostgreSQL rows keyed by verified subject |
-| Where are OAuth tokens stored? | Nowhere; no tokens exist | Encrypted server-side store, outside model-visible state |
-| What should the model receive? | Selected demo name | Minimal authorization result or trusted subject context, never raw tokens |
+The external approval service must apply the same rule: approval membership must
+come from a trusted backend claim or directory, never from chat text.
 
 ## What is implemented
 
@@ -160,14 +151,15 @@ trusted backend claim or directory, never from chat text.
 - Segregated approval boundary based on `CLOUD_JOURNEY_APPROVERS` membership
 - `journey_operations` records for command outcomes and future idempotency/retry work
 - Globally unique APM IDs enforced by the database
-- Database-backed group-to-APM authorization with session-bound simulated users
-- Nine purpose-specific Google ADK tools and a `root_agent` suitable for ADK Web
+- Database-backed group-to-APM authorization keyed by verified Google subjects
+- One `orchestrator_agent.main.root_agent` composing two specialist-routing tools
+  with eight durable Journey lifecycle tools
 - Self-contained unit/acceptance tests, including process restart and conflicting actions
 
 No real cloud resources are provisioned and no OAuth tokens are stored.
 
-For a fully managed GCP deployment using Agent Runtime, Agent Registry Playground,
-and the existing Cloud SQL database, follow [GCP_DEPLOYMENT.md](GCP_DEPLOYMENT.md).
+For a Cloud Run source deployment using direct `gcloud` commands and the existing
+Cloud SQL database, follow [GCP_DEPLOYMENT.md](GCP_DEPLOYMENT.md).
 
 ## Prerequisites
 
@@ -243,11 +235,12 @@ The migration order is:
 After recreation, start the agent:
 
 ```powershell
-adk web .
+uvicorn orchestrator_agent.main:app --reload
 ```
 
-Then test an allowed request with `Start a journey with APM ID 100401, as sam.`
-To test denial, open a different ADK session and try APM `100403` as `sam`.
+Open `http://127.0.0.1:8000/playground`, then test an allowed request with
+`Start a journey with APM ID 100401.` To test denial, sign in with a verified
+subject mapped to `GROUP_2` and try APM `100401`.
 
 The Auth Proxy exposes the local TCP endpoint; it does not create a local Docker
 database. The application can create missing PoC tables on its first tool call,
@@ -267,42 +260,39 @@ configuration defaults to PostgreSQL, and the same transition code executes
 `SELECT ... FOR UPDATE`; the optimistic version predicate adds protection on
 backends that do not implement row locks.
 
-## Simulated group authorization and privacy boundary
+## Verified-subject group authorization and privacy boundary
 
 An APM ID identifies one Journey globally, not one Journey per chat session. The
 database has a unique constraint on `journeys.apm_id`, so two simultaneous agent
 requests cannot create separate Journeys for `100401`.
 
-This PoC intentionally has no authentication provider. `sam`, `ivan`, `adi`,
-`abdur`, and `ajir` are simulated identities. The first identity selection or
-`start_journey` call binds one simulated identity to ADK session state; switching
-identity inside that session is rejected. This makes authorization behavior
-testable, but a user can still open a new session and claim another name, so it
-must not be treated as production security.
+The verified Google `sub` is the only user key accepted by Journey tools. It is
+injected at the HTTP boundary and cross-checked against `ToolContext.user_id`;
+neither value is exposed as a model-callable argument.
 
 The normalized authorization tables are the source of truth:
 
 - `access_groups` defines groups.
-- `access_group_members` maps simulated users to groups.
+- `access_group_members` maps verified Google subjects to groups.
 - `apm_group_assignments` maps APM IDs to groups.
 - `journeys.access_group_id` records the owning group durably.
 
-Fresh PoC databases are seeded without overwriting existing rows:
+Fresh test databases retain these placeholder subjects so policy behavior is
+repeatable. A deployed database must use real verified Google subjects instead:
 
-| Simulated group | Users | Available APM IDs |
+| Test group | Placeholder subjects | Available APM IDs |
 |---|---|---|
 | `GROUP_1` | `sam`, `ivan`, `adi` | `100401`, `100402` |
 | `GROUP_2` | `abdur`, `ajir` | `100403`, `100404` |
 
-`journeys.owner_subject` remains an audit field containing ADK's runtime
-`ToolContext.user_id`; it is no longer the Journey access boundary. Every ADK
-read or change checks `journeys.access_group_id` against the simulated user's
+`journeys.owner_subject` records the verified Google subject for audit. Every ADK
+read or change checks `journeys.access_group_id` against that subject's current
 database membership.
 
 This gives the intended behavior:
 
-- A same-group member can select their simulated identity in a new session and
-  recover the Journey with its APM ID.
+- A verified same-group member can recover the Journey with its APM ID in a new
+  session.
 - Starting the same APM ID again as a same-group member returns the existing durable
   Journey instead of creating another row.
 - A different-group user receives the same denial for a cross-group APM ID as for
@@ -415,7 +405,7 @@ people care about. The PoC now records both views in `journey_events`:
 | `GovernanceTicketCreated` | Governance Started | The proposed plan reaches `WAITING_FOR_APPROVAL` |
 | `GovernanceStatusChanged` | Approval Changed | The external backend records `APPROVED` or `REJECTED` |
 | `MyAccessRequestSubmitted` | Access Request Created | Execution enters `PROVISIONING_AGENT_IDENTITY` |
-| `MyAccessStatusChanged` | Access Updated | The simulated identity reaches `AGENT_IDENTITY_READY` |
+| `MyAccessStatusChanged` | Access Updated | The simulated agent identity reaches `AGENT_IDENTITY_READY` |
 | `DependencyCompleted` | External dependency completed | Identity readiness allows App Factory preparation to begin |
 | `ReadinessEvaluated` | Readiness Decision Produced | App Factory preparation reaches its ready checkpoint |
 | `AppFactoryManifestPublished` | Manifest Generated | The simulated App Factory reaches `APP_FACTORY_READY` |
@@ -430,19 +420,18 @@ deployment moves through its running and validation checkpoints. The business-ev
 metadata retains the actor, source state, target state, trigger, and relevant source
 details such as a rejection reason.
 
-## ADK tools
+## Durable Journey tools composed into the orchestrator
 
 | Tool | Purpose | Changes Journey state |
 |---|---|---:|
-| `select_simulated_identity(user_name)` | Bind a demo user to the current ADK session and show that group's APM IDs | No |
-| `start_journey(apm_id, user_name)` | Bind the demo user, authorize the APM mapping, and create or return the group's Journey | Yes on first call |
+| `start_journey(apm_id)` | Use the verified Google subject, authorize its APM mapping, and create or return the group's Journey | Yes on first call |
 | `get_cloud_journey_guidance(question, journey_id)` | Answer using persisted Journey context and identify missing discovery facts | No |
 | `record_application_inventory(...)` | Persist application, platform, dependency, data, and availability knowledge | Yes |
 | `generate_cloud_plan(...)` | Persist a proposed target plan and submit it for independent review | Yes |
 | `wait_for_external_approval(journey_id, timeout_seconds, poll_interval_seconds)` | Poll PostgreSQL for an external decision for up to two minutes | No |
 | `resume_journey_after_approval(journey_id)` | Continue simulated execution only if PostgreSQL already says `APPROVED` | Yes |
 | `get_journey_status(journey_id)` | Read current state, version, requester, and complete audit history | No |
-| `get_journey_status_by_apm_id(apm_id)` | Recover a Journey authorized for the simulated user's group | No |
+| `get_journey_status_by_apm_id(apm_id)` | Recover a Journey authorized for the verified user's group | No |
 
 Neither approval nor rejection is registered as an ADK tool. The backend-only
 simulator is a separate module, `cloud_journey.approval_backend`. All state changes
@@ -450,15 +439,17 @@ still pass through the central state machine. The original `continue_journey`
 function remains a compatibility API for the initial PoC contract, but Cloud
 Compass cannot call it.
 
-## Run ADK Web
+## Run the main orchestrator locally
 
 From the repository root, run:
 
 ```powershell
-adk web .
+uvicorn orchestrator_agent.main:app --reload
 ```
 
-Then select `cloud_journey` in the web interface.
+Then open `http://127.0.0.1:8000/playground`. The response includes a session ID,
+which the playground retains for multi-turn context. Journey state itself remains
+in PostgreSQL and can be recovered by APM ID after that HTTP session is lost.
 
 ## Practical demo conversation
 
@@ -471,7 +462,7 @@ should resolve to the prior tool result.
 ```text
 Before I start, explain what Cloud Compass can help me with during an application cloud journey.
 
-Start a Cloud Journey for APM 100401 as sam.
+Start a Cloud Journey for APM 100401.
 
 What do you need to know about this application before recommending a cloud plan?
 
@@ -542,7 +533,7 @@ WAITING_FOR_APPROVAL
 ### Demo 2: independent reviewer rejects with a persisted reason
 
 ```text
-Start a Cloud Journey for APM 100402 as sam.
+Start a Cloud Journey for APM 100402.
 
 The application is Partner Portal. It is a Tier 2 service on Windows VMs with
 development and production environments. Dependencies are SQL Server, corporate
@@ -572,7 +563,7 @@ Expected final state: `REJECTED`. Cloud Compass observes it and does not resume.
 ### Demo 3: new-session recovery and group isolation
 
 ```text
-Start a Cloud Journey for APM 100403 as abdur.
+Start a Cloud Journey for APM 100403.
 
 The application is Reporting Service. It is Tier 2, runs on Linux VMs, has test
 and production environments, depends on PostgreSQL and SFTP, contains internal
@@ -582,7 +573,7 @@ Create a proposed plan targeting Cloud Run with Cloud SQL. The objective is to
 reduce operations effort. Constraints are private database access and a phased cutover.
 ```
 
-Stop ADK Web or close the browser. Later, open a completely new conversation and
+Restart the local server or close the browser. Later, open a new conversation and
 select another member of `GROUP_2` before asking for status. The new chat has no
 Journey ID and no previous conversation state:
 
@@ -590,14 +581,14 @@ Journey ID and no previous conversation state:
 I am ajir. Could you give me the current status of APM ID 100403?
 ```
 
-Expected response: Cloud Compass calls `select_simulated_identity`, then
-`get_journey_status_by_apm_id`, and reports `WAITING_FOR_APPROVAL` with the
-Journey ID, captured plan, and durable history because `ajir` is in `GROUP_2`.
+Expected response: Cloud Compass calls `get_journey_status_by_apm_id` and reports
+`WAITING_FOR_APPROVAL` with the Journey ID, captured plan, and durable history
+because the verified caller's subject is mapped to `GROUP_2`.
 
 Now open another new session and repeat as a `GROUP_1` member:
 
 ```text
-I am sam. Could you give me the current status of APM ID 100403?
+Could you give me the current status of APM ID 100403?
 ```
 
 Expected response:
@@ -611,7 +602,7 @@ state, plan, or history. Finally, open a new session as another `GROUP_2` member
 and send:
 
 ```text
-Start a Cloud Journey for APM 100403 as ajir.
+Start a Cloud Journey for APM 100403.
 ```
 
 Cloud Compass returns the existing Journey with `created=false`; it does not

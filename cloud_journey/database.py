@@ -49,7 +49,7 @@ def build_engine(database_url: str | None = None, *, echo: bool | None = None) -
 
 
 def _build_cloud_sql_engine(*, echo: bool | None = None) -> Engine:
-    """Build an Agent Runtime-friendly pool using the Cloud SQL connector."""
+    """Build a Cloud Run-friendly pool using the Cloud SQL connector."""
     global _cloud_sql_connector
     try:
         from google.cloud.sql.connector import Connector, IPTypes

@@ -1,324 +1,110 @@
-# Deploy Cloud Compass to Agent Runtime and Agent Registry
+# Deploy the Orchestrator to Cloud Run
 
-This guide moves the ADK process to Gemini Enterprise Agent Platform Agent
-Runtime while keeping Journey business state in the existing Cloud SQL for
-PostgreSQL database.
+The FastAPI application in `orchestrator_agent/main.py` is the only deployment
+entry point. No Python deployment script or Agent Runtime object is required.
+Journey state remains in Cloud SQL; HTTP conversation sessions are process-local
+and may be recreated, while a Journey remains recoverable by Journey ID or APM ID.
 
-## Resulting architecture
+## 1. Set command variables
 
-```text
-Agent Registry Playground
-          |
-          v
-Agent Runtime (ADK AdkApp + managed chat sessions)
-          |
-          | Cloud SQL Python Connector / pg8000
-          v
-Existing Cloud SQL PostgreSQL
-          |
-          +-- access_groups
-          +-- access_group_members
-          +-- apm_group_assignments
-          +-- journeys (unique apm_id + owner_subject + access_group_id)
-          +-- journey_events
-          +-- journey_operations
-```
-
-ADK's managed session resource stores conversation history. It does not replace
-the Journey tables: every status tool still reads the authoritative business
-state from Cloud SQL.
-
-## Required: migrate the existing database
-
-This revision adds normalized group authorization, `journeys.owner_subject`,
-`journeys.access_group_id`, and a database-enforced unique APM ID. SQLAlchemy's
-`create_all()` creates these fields for a fresh database but does not alter an
-existing Cloud SQL table.
-
-For a completely empty database, apply all files in order, beginning with
-`migrations/000_initial_schema.sql`. For an existing database that already has
-the three Journey tables, do not apply `000`; use the upgrade checks and commands
-below for `001`, `002`, and `003`.
-
-To intentionally discard an existing PoC database and rebuild it through a
-locally running Cloud SQL Auth Proxy, first stop agents that connect to it, then
-run:
+Run these commands in PowerShell and replace the example values:
 
 ```powershell
-.\scripts\recreate_cloud_sql_database.ps1 `
-    -AdminUser postgres `
-    -ApplicationUser journey `
-    -DatabaseName durable_journey
+$PROJECT_ID = "your-project-id"
+$REGION = "us-central1"
+$SERVICE = "cloud-journey-orchestrator"
+$RUNTIME_SA = "cloud-journey-orchestrator@$PROJECT_ID.iam.gserviceaccount.com"
+$CLOUD_SQL_INSTANCE = "${PROJECT_ID}:${REGION}:journey-db"
+$INVENTORY_AGENT_URL = "https://inventory-agent-url"
+$APM_AGENT_URL = "https://apm-agent-url"
+$OAUTH_CLIENT_ID = "your-google-web-client-id.apps.googleusercontent.com"
+
+gcloud config set project $PROJECT_ID
 ```
 
-This drops only the named database, not the Cloud SQL instance. The script
-requires confirmation, recreates the database with `journey` as owner, and
-applies `000`, `001`, `002`, and `003` in filename order.
+## 2. Enable APIs and create the runtime identity
 
-With the Cloud SQL Auth Proxy already running, first check for existing
-duplicates:
+```powershell
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com aiplatform.googleapis.com sqladmin.googleapis.com secretmanager.googleapis.com
+
+gcloud iam service-accounts create cloud-journey-orchestrator --display-name="Cloud Journey Orchestrator"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:$RUNTIME_SA" --role="roles/aiplatform.user"
+gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:$RUNTIME_SA" --role="roles/cloudsql.client"
+gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:$RUNTIME_SA" --role="roles/secretmanager.secretAccessor"
+```
+
+Grant this service account `roles/run.invoker` on each private downstream Cloud
+Run specialist:
+
+```powershell
+gcloud run services add-iam-policy-binding inventory-agent --region=$REGION --member="serviceAccount:$RUNTIME_SA" --role="roles/run.invoker"
+gcloud run services add-iam-policy-binding apm-agent --region=$REGION --member="serviceAccount:$RUNTIME_SA" --role="roles/run.invoker"
+```
+
+## 3. Store the database password
+
+Create the secret once, then add the database password as a secret version. Do
+not put the password in the deployment command or repository.
+
+```powershell
+gcloud secrets create journey-db-password --replication-policy="automatic"
+gcloud secrets versions add journey-db-password --data-file="PATH_TO_PASSWORD_FILE"
+```
+
+Skip the first command if the secret already exists. Delete the temporary local
+password file after adding the version.
+
+## 4. Deploy directly from source
+
+The command overrides the Python buildpack start command so the nested FastAPI
+module is launched explicitly:
+
+```powershell
+$ENV_VARS = "GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION,ORCHESTRATOR_MODEL=gemini-2.5-flash,CLOUD_SQL_INSTANCE=$CLOUD_SQL_INSTANCE,CLOUD_SQL_IP_TYPE=PUBLIC,CLOUD_SQL_IAM_AUTH=false,DB_USER=journey,DB_NAME=durable_journey,INVENTORY_AGENT_URL=$INVENTORY_AGENT_URL,APM_AGENT_URL=$APM_AGENT_URL,OAUTH_CLIENT_ID=$OAUTH_CLIENT_ID,ALLOWED_USER_DOMAINS=example.com,REQUEST_TIMEOUT_SECONDS=90"
+
+gcloud run deploy $SERVICE `
+  --source=. `
+  --region=$REGION `
+  --service-account=$RUNTIME_SA `
+  --command=uvicorn `
+  --args="orchestrator_agent.main:app,--host=0.0.0.0,--port=8080" `
+  --set-env-vars=$ENV_VARS `
+  --set-secrets=DB_PASSWORD=journey-db-password:latest `
+  --allow-unauthenticated
+```
+
+`--allow-unauthenticated` permits the browser to load `/playground`; configure
+`OAUTH_CLIENT_ID` and `ALLOWED_USER_DOMAINS` so `/v1/query` still requires a
+verified Google user. If the service is API-only behind an authenticated gateway,
+use `--no-allow-unauthenticated` instead.
+
+For IAM database authentication, set `CLOUD_SQL_IAM_AUTH=true`, omit
+`--set-secrets`, and grant the runtime service account
+`roles/cloudsql.instanceUser` plus the required PostgreSQL privileges.
+
+## 5. Verify
+
+```powershell
+$SERVICE_URL = gcloud run services describe $SERVICE --region=$REGION --format="value(status.url)"
+Invoke-RestMethod "$SERVICE_URL/health"
+```
+
+Before using Journey tools, an administrator must add the signed-in user's stable
+Google `sub` to an application group. The subject must come from a trusted Google
+identity or directory source, never from chat input:
 
 ```sql
-SELECT apm_id, COUNT(*)
-FROM journeys
-GROUP BY apm_id
-HAVING COUNT(*) > 1;
+INSERT INTO access_group_members (group_id, user_subject)
+VALUES ('GROUP_1', 'VERIFIED_GOOGLE_SUBJECT')
+ON CONFLICT DO NOTHING;
 ```
 
-Resolve any returned rows deliberately; do not arbitrarily delete Journey audit
-records. Then apply the migration through the proxy:
+The raw ID token is never written to this table, ADK session state, Journey
+context, or audit history.
 
-```powershell
-psql "host=127.0.0.1 port=5432 dbname=durable_journey user=journey sslmode=disable" -v ON_ERROR_STOP=1 -f migrations/001_apm_uniqueness_and_ownership.sql
-psql "host=127.0.0.1 port=5432 dbname=durable_journey user=journey sslmode=disable" -v ON_ERROR_STOP=1 -f migrations/002_group_apm_authorization.sql
-psql "host=127.0.0.1 port=5432 dbname=durable_journey user=journey sslmode=disable" -v ON_ERROR_STOP=1 -f migrations/003_architecture_aligned_states.sql
-```
-
-The migration backfills legacy `owner_subject` values from the PoC's
-`requested_by` value, for example `sam`. That preserves local behavior. Before
-using old rows in Agent Runtime, map each legacy owner to the stable runtime user
-ID that will own those rows:
-
-```sql
-UPDATE journeys
-SET owner_subject = 'STABLE_RUNTIME_USER_ID'
-WHERE owner_subject = 'sam';
-```
-
-Do this only from an administrator-controlled migration process. Never accept an
-owner subject from a chat prompt. New Journeys bind it automatically from ADK's
-injected `ToolContext.user_id`.
-
-## 1. Choose the database network path
-
-Agent Runtime connects through the Cloud SQL Python Connector using the
-instance's connection name (`project:region:instance-name`) rather than a local
-proxy endpoint, hostname, or raw public IP. The connector establishes an
-authorized, encrypted connection with the runtime service account's Application
-Default Credentials. `CLOUD_SQL_IP_TYPE` defaults to `PUBLIC`; use `PRIVATE` or
-`PSC` only when the runtime has the corresponding network path.
-
-## 2. Set local gcloud context
-
-Install the Google Cloud CLI, then authenticate the account that will deploy the
-agent:
-
-```powershell
-gcloud auth login
-gcloud auth application-default login
-gcloud config set project YOUR_PROJECT_ID
-```
-
-Enable the required services:
-
-```powershell
-gcloud services enable aiplatform.googleapis.com
-gcloud services enable sqladmin.googleapis.com
-gcloud services enable storage.googleapis.com
-gcloud services enable telemetry.googleapis.com
-gcloud services enable logging.googleapis.com
-gcloud services enable monitoring.googleapis.com
-gcloud services enable agentregistry.googleapis.com
-```
-
-## 3. Create the runtime service account
-
-```powershell
-gcloud iam service-accounts create cloud-compass-agent --display-name="Cloud Compass Agent Runtime"
-```
-
-Grant only the project roles needed by this PoC:
-
-```powershell
-gcloud projects add-iam-policy-binding YOUR_PROJECT_ID --member="serviceAccount:cloud-compass-agent@YOUR_PROJECT_ID.iam.gserviceaccount.com" --role="roles/aiplatform.user"
-gcloud projects add-iam-policy-binding YOUR_PROJECT_ID --member="serviceAccount:cloud-compass-agent@YOUR_PROJECT_ID.iam.gserviceaccount.com" --role="roles/cloudsql.client"
-gcloud projects add-iam-policy-binding YOUR_PROJECT_ID --member="serviceAccount:cloud-compass-agent@YOUR_PROJECT_ID.iam.gserviceaccount.com" --role="roles/logging.logWriter"
-gcloud projects add-iam-policy-binding YOUR_PROJECT_ID --member="serviceAccount:cloud-compass-agent@YOUR_PROJECT_ID.iam.gserviceaccount.com" --role="roles/monitoring.metricWriter"
-```
-
-The deploying user also needs `roles/aiplatform.user`, permission to write to the
-staging bucket, and `roles/iam.serviceAccountUser` on this service account. Ask a
-project administrator to grant these if deployment returns `PERMISSION_DENIED`.
-Do not create or download a service-account key; Agent Runtime supplies runtime
-credentials automatically.
-
-## 4. Create the staging bucket
-
-Keep the bucket in the same region as the runtime where possible:
-
-```powershell
-gcloud storage buckets create gs://YOUR_UNIQUE_STAGING_BUCKET --location=YOUR_REGION --uniform-bucket-level-access
-```
-
-## 5. Configure the database credential
-
-Use the existing PostgreSQL application user. It needs `CONNECT` on the database,
-`USAGE` on the target schema, and DML/sequence access to the Journey tables. The
-connector handles transport security and Cloud SQL instance authorization; the
-database username and password still handle PostgreSQL authentication.
-
-For this PoC, the password is passed to Agent Runtime as a plain environment
-variable. Use a managed secret mechanism before promoting the deployment. IAM
-database authentication is also supported: set `CLOUD_SQL_IAM_AUTH=true`, omit
-`DB_PASSWORD`, configure the corresponding Cloud SQL IAM database user, and
-grant the runtime service account `roles/cloudsql.instanceUser`.
-
-## 6. Create the deployment configuration
-
-```powershell
-Copy-Item .env.gcp.example .env.gcp
-```
-
-Edit `.env.gcp`:
+After registering the subject, open `$SERVICE_URL/playground` and start with:
 
 ```text
-GCP_PROJECT_ID=your-project-id
-GCP_LOCATION=us-central1
-AGENT_STAGING_BUCKET=gs://your-unique-staging-bucket
-AGENT_SERVICE_ACCOUNT=cloud-compass-agent@your-project-id.iam.gserviceaccount.com
-
-CLOUD_SQL_INSTANCE=your-project-id:us-central1:your-instance-name
-CLOUD_SQL_IP_TYPE=PUBLIC
-CLOUD_SQL_IAM_AUTH=false
-DB_USER=journey
-DB_PASSWORD=replace-with-the-database-password
-DB_NAME=durable_journey
+Start a durable Cloud Journey for APM 100401.
 ```
-
-The deploy script sends these settings to Agent Runtime. At startup, SQLAlchemy
-creates a `postgresql+pg8000` engine whose connection creator calls the Cloud SQL
-Python Connector. `DATABASE_URL` remains available for local development through
-the Auth Proxy, but is not used by the managed deployment.
-
-## 7. Install the deployment SDK and deploy
-
-Use Python 3.11 or newer:
-
-```powershell
-py -3.11 -m venv .venv-gcp
-.venv-gcp\Scripts\Activate.ps1
-python -m pip install -r requirements-agent-runtime.txt
-python scripts/deploy_agent.py
-```
-
-Deployment takes several minutes. Save the returned resource name in `.env.gcp`:
-
-```text
-AGENT_RESOURCE_NAME=projects/PROJECT_ID/locations/REGION/reasoningEngines/RESOURCE_ID
-```
-
-Agent Runtime deployments are registered automatically in Agent Registry. The
-managed ADK application also provides the streaming operation required by the
-console Playground.
-
-## 8. Open the managed Playground
-
-In Google Cloud console:
-
-1. Open **Agent Registry**.
-2. Select the same project and region used for deployment.
-3. Open **Durable Cloud Compass**.
-4. Select **Playground** and create a new session.
-
-The equivalent route is **Agent Platform > Deployments > Durable Cloud Compass >
-Playground**.
-
-Start with a read-only database proof using a mapped APM ID and a simulated user
-from its group:
-
-```text
-I am sam. Could you give me the current status of APM ID 100401?
-```
-
-If that succeeds, Agent Runtime is reading the same Cloud SQL database as the
-local Auth Proxy configuration. Then start a new Journey in the Playground.
-
-### Identity boundary for the PoC
-
-There is deliberately no authentication provider in this revision. A user types
-a simulated identity such as `sam`; the backend binds that name once to ADK
-session state and uses the predefined demo group. This tests policy behavior but
-is not a security boundary: anyone can open a new session and claim another demo
-name. `ToolContext.user_id` is retained as creator audit data only.
-
-For production, replace `SIMULATED_USERS` with group claims from a trusted
-authenticated frontend or identity provider. Keep the database-backed APM policy
-and session-switch protection, but never authorize from a name supplied in chat.
-
-## 9. Optional SDK smoke test
-
-After setting `AGENT_RESOURCE_NAME`:
-
-```powershell
-python scripts/query_remote_agent.py
-```
-
-The SDK caller explicitly supplies `AGENT_TEST_USER` as ADK audit/session data.
-Authorization in this PoC comes from the simulated name in each new session, so
-use messages that select `sam`/`ivan` for same-group access and `abdur` for denial:
-
-```powershell
-$env:AGENT_TEST_USER = "project-owner-a"
-$env:AGENT_TEST_MESSAGE = "I am sam. Could you give me the current status of APM ID 100401?"
-python scripts/query_remote_agent.py
-
-$env:AGENT_TEST_USER = "different-user-b"
-python scripts/query_remote_agent.py
-```
-
-## 10. Verify durability in GCP
-
-1. As simulated user `sam`, create APM `100401` in the managed Playground.
-2. Capture inventory and generate the plan until `WAITING_FOR_APPROVAL`.
-3. Close the Playground session and create a new one.
-4. Select simulated user `ivan` and ask: `Could you give me the current status of
-   APM ID 100401?`
-5. Confirm that Cloud Compass reloads `WAITING_FOR_APPROVAL` from Cloud SQL.
-6. Start another new session as simulated user `abdur` and ask the same question.
-7. Confirm that `abdur` receives only the generic inaccessible/not-found response
-   and sees no APM, Journey, owner, status, plan, or history data.
-8. As `abdur`, try to start APM `100401`; confirm creation fails generically and no
-   second database row appears.
-
-Verify the database invariant directly:
-
-```sql
-SELECT apm_id, COUNT(*)
-FROM journeys
-WHERE apm_id = '100401'
-GROUP BY apm_id;
-```
-
-The result must be exactly one row with count `1`.
-
-Agent Runtime sessions may preserve conversation history, but this test uses a new
-session deliberately. PostgreSQL—not the managed chat session—must recover the
-Journey state.
-
-## Troubleshooting
-
-### Database connection timeout
-
-Verify the `CLOUD_SQL_INSTANCE` connection name, confirm that the Cloud SQL Admin
-API is enabled, and ensure the runtime service account has `roles/cloudsql.client`.
-For `PRIVATE` or `PSC`, also confirm that Agent Runtime has the required network
-path. A local Auth Proxy connection does not test the managed runtime's identity
-or network.
-
-### PostgreSQL authentication failure
-
-Verify `DB_USER`, `DB_PASSWORD`, `DB_NAME`, and the database grants. For IAM
-database authentication, verify the IAM database user and
-`roles/cloudsql.instanceUser` grant.
-
-### Agent deploys but tools fail on first use
-
-Agent creation does not necessarily open a database connection. The first tool
-call initializes the PoC tables and connection pool, so inspect Agent Runtime logs
-for the exact database or IAM error.
-
-### Playground tab is missing
-
-Open the Agent Runtime deployment as well as its Agent Registry entry. Confirm the
-resource was deployed as framework `google-adk`; the packaged `AdkApp` supplies
-the streaming query method used by Playground.

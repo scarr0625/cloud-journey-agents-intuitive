@@ -1,7 +1,7 @@
-"""Simulated identity and approval policy for the PoC.
+"""Database group access and simulated external-approval policy for the PoC.
 
-The policy is deliberately independent of ADK and the state machine so the
-simulated identities can later be replaced by validated OAuth/SSO claims.
+Journey tools authorize verified Google subjects. The named identities below are
+retained only for direct service tests and the separate approval-backend simulator.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ APM_GROUP_1 = "GROUP_1"
 APM_GROUP_2 = "GROUP_2"
 SUPPORTED_APPROVAL_ACTIONS = frozenset({"approve", "reject"})
 
-# Demo data for the unauthenticated PoC. The database table remains the source
-# of truth for APM-to-group access; these rows only bootstrap a fresh database.
+# Test fixtures use short placeholder subjects. Production rows must contain
+# stable subjects obtained from verified Google identity or a trusted directory.
 DEFAULT_APM_GROUP_ACCESS: dict[str, frozenset[str]] = {
     APM_GROUP_1: frozenset({"100401", "100402"}),
     APM_GROUP_2: frozenset({"100403", "100404"}),
@@ -52,13 +52,13 @@ class AuthorizationDecision:
 class ApmAuthorizationDecision:
     allowed: bool
     apm_id: str
-    user_name: str
+    user_subject: str
     user_group: str | None
     reason: str
 
 
 SIMULATED_USERS: dict[str, SimulatedUser] = {
-    # These identities make group authorization testable before SSO is added.
+    # Direct service tests and the separate approval simulator use these only.
     "sam": SimulatedUser("sam", "sam@example.com", "PROJECT_OWNER"),
     "ivan": SimulatedUser("ivan", "ivan@example.com", "PROJECT_OWNER"),
     "adi": SimulatedUser("adi", "adi@example.com", "PROJECT_OWNER"),
@@ -80,7 +80,7 @@ def get_simulated_user(user_name: str) -> SimulatedUser | None:
 
 def evaluate_apm_authorization(
     *,
-    user: SimulatedUser,
+    user_subject: str,
     apm_id: str,
     user_groups: frozenset[str],
     required_group: str | None,
@@ -88,14 +88,17 @@ def evaluate_apm_authorization(
     """Evaluate the database-backed APM mapping without disclosing other groups."""
     allowed = required_group is not None and required_group in user_groups
     if allowed:
-        reason = f"{user.name} may access the requested APM ID through {required_group}."
+        reason = (
+            "The authenticated user may access the requested APM ID through "
+            f"{required_group}."
+        )
     else:
         # Use one message for unmapped and cross-group IDs to avoid an APM oracle.
-        reason = "The simulated user is not authorized to access the requested APM ID."
+        reason = "The authenticated user is not authorized to access the requested APM ID."
     return ApmAuthorizationDecision(
         allowed=allowed,
         apm_id=apm_id,
-        user_name=user.name,
+        user_subject=user_subject,
         user_group=required_group if allowed else None,
         reason=reason,
     )

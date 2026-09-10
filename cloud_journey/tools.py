@@ -24,6 +24,11 @@ from cloud_journey.authorization import (
     get_simulated_user,
 )
 from cloud_journey.database import SessionLocal, init_db
+from cloud_journey.identity import (
+    VerifiedGoogleIdentity,
+    VerifiedIdentityRequired,
+    get_verified_identity,
+)
 from cloud_journey.models import (
     AccessGroup,
     AccessGroupMember,
@@ -96,7 +101,6 @@ EXECUTION_PIPELINE: dict[
         {"integration": "cloud-build-mcp", "simulated": True},
     ),
 }
-SIMULATED_USER_STATE_KEY = "cloud_journey:simulated_user_name"
 T = TypeVar("T")
 
 
@@ -123,20 +127,6 @@ class ApmAccessDenied(JourneyError):
     def __init__(self, decision: ApmAuthorizationDecision):
         super().__init__(decision.reason)
         self.decision = decision
-
-
-class SimulatedIdentityRequired(JourneyError):
-    def __init__(self):
-        super().__init__(
-            "Select a simulated user for this ADK session before accessing a Journey"
-        )
-
-
-class SimulatedIdentityConflict(JourneyError):
-    def __init__(self, current_user: str):
-        super().__init__(
-            f"This ADK session is already bound to simulated user {current_user}"
-        )
 
 
 def _iso(value: datetime) -> str:
@@ -313,9 +303,14 @@ class JourneyService:
     def require_apm_access(
         self, apm_id: str, user: SimulatedUser
     ) -> ApmAuthorizationDecision:
-        user_groups = self.state_machine.get_access_groups_for_user(user.name)
+        return self.require_apm_access_for_subject(apm_id, user.name)
+
+    def require_apm_access_for_subject(
+        self, apm_id: str, user_subject: str
+    ) -> ApmAuthorizationDecision:
+        user_groups = self.state_machine.get_access_groups_for_user(user_subject)
         decision = evaluate_apm_authorization(
-            user=user,
+            user_subject=user_subject,
             apm_id=apm_id,
             user_groups=user_groups,
             required_group=self.state_machine.get_apm_access_group(apm_id),
@@ -326,42 +321,65 @@ class JourneyService:
 
     def require_group_access(self, journey_id: str, user_name: str) -> None:
         user = self._user(user_name)
-        user_groups = self.state_machine.get_access_groups_for_user(user.name)
-        self.state_machine.get_group_journey(journey_id, user_groups)
+        self.require_group_access_for_subject(journey_id, user.name)
 
-    def simulated_identity(self, user_name: str) -> dict[str, Any]:
-        user = self._user(user_name)
-        apm_groups = sorted(
-            self.state_machine.get_access_groups_for_user(user.name)
-        )
-        return {
-            "ok": True,
-            "user_name": user.name,
-            "role": user.role,
-            "apm_group": apm_groups[0] if len(apm_groups) == 1 else None,
-            "apm_groups": apm_groups,
-            "available_apm_ids": self.state_machine.list_apm_ids_for_groups(
-                apm_groups
-            ),
-            "note": "This identity is simulated for the PoC and is not authentication.",
-        }
+    def require_group_access_for_subject(
+        self, journey_id: str, user_subject: str
+    ) -> None:
+        user_groups = self.state_machine.get_access_groups_for_user(user_subject)
+        self.state_machine.get_group_journey(journey_id, user_groups)
 
     def start(
         self, apm_id: str, user_name: str, owner_subject: str | None = None
     ) -> dict[str, Any]:
-        apm_id = apm_id.strip()
-        if not apm_id:
-            raise ValueError("apm_id must not be empty")
         user = self._user(user_name)
         if user.role != "PROJECT_OWNER":
             raise ProjectOwnerRequired()
-        access_decision = self.require_apm_access(apm_id, user)
+        return self._start_for_principal(
+            apm_id=apm_id,
+            subject=(owner_subject or user.name).strip(),
+            authorization_subject=user.name,
+            email=user.email,
+            requested_by=user.name,
+            role=user.role,
+        )
+
+    def start_for_verified_user(
+        self, apm_id: str, identity: VerifiedGoogleIdentity
+    ) -> dict[str, Any]:
+        """Start a Journey using only server-verified Google identity claims."""
+
+        return self._start_for_principal(
+            apm_id=apm_id,
+            subject=identity.subject,
+            authorization_subject=identity.subject,
+            email=identity.email,
+            requested_by=identity.subject,
+            role="PROJECT_OWNER",
+        )
+
+    def _start_for_principal(
+        self,
+        *,
+        apm_id: str,
+        subject: str,
+        authorization_subject: str,
+        email: str,
+        requested_by: str,
+        role: str,
+    ) -> dict[str, Any]:
+        apm_id = apm_id.strip()
+        subject = subject.strip()
+        if not apm_id:
+            raise ValueError("apm_id must not be empty")
+        if not subject:
+            raise ValueError("authenticated subject must not be empty")
+        access_decision = self.require_apm_access_for_subject(
+            apm_id, authorization_subject
+        )
         access_group_id = access_decision.user_group
         if access_group_id is None:
             raise ApmAccessDenied(access_decision)
-        subject = (owner_subject or user.name).strip()
-        if not subject:
-            raise ValueError("owner subject must not be empty")
 
         existing = self.state_machine.find_journey_by_apm_id(apm_id)
         if existing is not None:
@@ -371,7 +389,7 @@ class JourneyService:
             response.update(
                 {
                     "created": False,
-                    "note": "This APM ID already has a Journey accessible to the simulated user's group; returning its durable status.",
+                    "note": "This APM ID already has a Journey accessible to the authenticated user's group; returning its durable status.",
                 }
             )
             return response
@@ -379,9 +397,9 @@ class JourneyService:
         try:
             journey = self.state_machine.create_journey(
                 apm_id=apm_id,
-                requested_by=user.name,
-                requested_by_email=user.email,
-                role=user.role,
+                requested_by=requested_by,
+                requested_by_email=email,
+                role=role,
                 access_group_id=access_group_id,
                 owner_subject=subject,
                 context={"apm_validation": "simulated"},
@@ -965,12 +983,17 @@ class JourneyService:
     def status_by_apm_id(
         self, apm_id: str, user_name: str
     ) -> dict[str, Any]:
+        user = self._user(user_name)
+        return self.status_by_apm_id_for_subject(apm_id, user.name)
+
+    def status_by_apm_id_for_subject(
+        self, apm_id: str, user_subject: str
+    ) -> dict[str, Any]:
         apm_id = apm_id.strip()
         if not apm_id:
             raise ValueError("apm_id must not be empty")
-        user = self._user(user_name)
-        self.require_apm_access(apm_id, user)
-        user_groups = self.state_machine.get_access_groups_for_user(user.name)
+        self.require_apm_access_for_subject(apm_id, user_subject)
+        user_groups = self.state_machine.get_access_groups_for_user(user_subject)
         journey = self.state_machine.get_group_journey_by_apm_id(
             apm_id, user_groups
         )
@@ -1048,14 +1071,14 @@ def get_service() -> JourneyService:
 def _tool_call(call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     try:
         return call()
-    except SimulatedIdentityRequired as exc:
+    except VerifiedIdentityRequired as exc:
         return {
             "ok": False,
             "status_code": 401,
-            "error": "SimulatedIdentityRequired",
+            "error": "VerifiedIdentityRequired",
             "message": str(exc),
         }
-    except (ApmAccessDenied, SimulatedIdentityConflict) as exc:
+    except ApmAccessDenied as exc:
         return {
             "ok": False,
             "status_code": 403,
@@ -1098,45 +1121,22 @@ def _tool_call(call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         return {"ok": False, "status_code": 400, "error": "InvalidInput", "message": str(exc)}
 
 
-def _bind_simulated_user(user_name: str, tool_context: ToolContext) -> str:
-    """Bind one demo identity to an ADK session; this is not authentication."""
-    user = get_simulated_user(user_name)
-    if user is None:
-        raise UnknownUser(user_name)
-    current = tool_context.state.get(SIMULATED_USER_STATE_KEY)
-    if current is not None and current != user.name:
-        raise SimulatedIdentityConflict(str(current))
-    tool_context.state[SIMULATED_USER_STATE_KEY] = user.name
-    return user.name
+def _get_verified_user(tool_context: ToolContext) -> VerifiedGoogleIdentity:
+    """Read server-injected claims that are unavailable to the model schema."""
 
-
-def _get_simulated_user_name(tool_context: ToolContext) -> str:
-    user_name = tool_context.state.get(SIMULATED_USER_STATE_KEY)
-    if not user_name:
-        raise SimulatedIdentityRequired()
-    return str(user_name)
-
-
-def select_simulated_identity(
-    user_name: str, tool_context: ToolContext
-) -> dict[str, Any]:
-    """Select an immutable demo identity for this ADK session."""
-    return _tool_call(
-        lambda: get_service().simulated_identity(
-            _bind_simulated_user(user_name, tool_context)
-        )
+    return get_verified_identity(
+        tool_context.state,
+        expected_subject=tool_context.user_id,
     )
 
 
 def start_journey(
-    apm_id: str, user_name: str, tool_context: ToolContext
+    apm_id: str, tool_context: ToolContext
 ) -> dict[str, Any]:
-    """Start a Cloud Journey for an APM ID as a simulated user."""
+    """Start a Cloud Journey for an APM ID as the verified Google user."""
     return _tool_call(
-        lambda: get_service().start(
-            apm_id,
-            _bind_simulated_user(user_name, tool_context),
-            tool_context.user_id,
+        lambda: get_service().start_for_verified_user(
+            apm_id, _get_verified_user(tool_context)
         )
     )
 
@@ -1153,8 +1153,8 @@ def get_cloud_journey_guidance(
     def call() -> dict[str, Any]:
         service = get_service()
         if journey_id.strip():
-            service.require_group_access(
-                journey_id, _get_simulated_user_name(tool_context)
+            service.require_group_access_for_subject(
+                journey_id, _get_verified_user(tool_context).subject
             )
         return service.guidance(question, journey_id)
 
@@ -1175,8 +1175,8 @@ def record_application_inventory(
     """Record application discovery facts supplied by the owner in durable storage."""
     def call() -> dict[str, Any]:
         service = get_service()
-        user_name = _get_simulated_user_name(tool_context)
-        service.require_group_access(journey_id, user_name)
+        identity = _get_verified_user(tool_context)
+        service.require_group_access_for_subject(journey_id, identity.subject)
         return service.record_inventory(
             journey_id,
             application_name,
@@ -1186,7 +1186,7 @@ def record_application_inventory(
             dependencies,
             data_classification,
             availability_requirement,
-            user_name,
+            identity.subject,
         )
 
     return _tool_call(call)
@@ -1202,8 +1202,8 @@ def generate_cloud_plan(
     """Generate a simulated Cloud plan from captured knowledge and submit it for review."""
     def call() -> dict[str, Any]:
         service = get_service()
-        service.require_group_access(
-            journey_id, _get_simulated_user_name(tool_context)
+        service.require_group_access_for_subject(
+            journey_id, _get_verified_user(tool_context).subject
         )
         return service.generate_plan(
             journey_id, target_platform, migration_objectives, constraints
@@ -1218,8 +1218,8 @@ def get_journey_status(
     """Read the authoritative Journey state and complete audit history from the database."""
     def call() -> dict[str, Any]:
         service = get_service()
-        service.require_group_access(
-            journey_id, _get_simulated_user_name(tool_context)
+        service.require_group_access_for_subject(
+            journey_id, _get_verified_user(tool_context).subject
         )
         return service.status(journey_id)
 
@@ -1231,8 +1231,8 @@ def get_journey_status_by_apm_id(
 ) -> dict[str, Any]:
     """Recover the current user's durable Journey by its globally unique APM ID."""
     return _tool_call(
-        lambda: get_service().status_by_apm_id(
-            apm_id, _get_simulated_user_name(tool_context)
+        lambda: get_service().status_by_apm_id_for_subject(
+            apm_id, _get_verified_user(tool_context).subject
         )
     )
 
@@ -1246,8 +1246,8 @@ def wait_for_external_approval(
     """Wait briefly for an external backend to write APPROVED or REJECTED to PostgreSQL."""
     def call() -> dict[str, Any]:
         service = get_service()
-        service.require_group_access(
-            journey_id, _get_simulated_user_name(tool_context)
+        service.require_group_access_for_subject(
+            journey_id, _get_verified_user(tool_context).subject
         )
         return service.wait_for_approval(
             journey_id, timeout_seconds, poll_interval_seconds
@@ -1262,8 +1262,8 @@ def resume_journey_after_approval(
     """Resume simulated execution only when PostgreSQL already contains APPROVED."""
     def call() -> dict[str, Any]:
         service = get_service()
-        service.require_group_access(
-            journey_id, _get_simulated_user_name(tool_context)
+        service.require_group_access_for_subject(
+            journey_id, _get_verified_user(tool_context).subject
         )
         return service.resume_after_approval(journey_id)
 
