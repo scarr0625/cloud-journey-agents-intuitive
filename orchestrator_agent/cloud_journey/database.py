@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from cloud_journey.models import Base
+from .models import Base
 
 load_dotenv()
 

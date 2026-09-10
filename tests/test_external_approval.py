@@ -4,8 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from cloud_journey import approval_backend
-from cloud_journey.state_machine import InvalidTransition
+from orchestrator_agent.cloud_journey import approval_backend
+from orchestrator_agent.cloud_journey.state_machine import InvalidTransition
 from orchestrator_agent.main import root_agent
 
 

@@ -143,7 +143,7 @@ come from a trusted backend claim or directory, never from chat text.
 
 ## What is implemented
 
-- Central transition validation in `cloud_journey/state_machine.py`
+- Central transition validation in `orchestrator_agent/cloud_journey/state_machine.py`
 - PostgreSQL `SELECT ... FOR UPDATE` plus a version-guarded update
 - One transaction per transition, numeric versions, and complete actor-aware audit history
 - Resumable architecture-aligned discovery, identity, App Factory, Cloud Build,
@@ -302,9 +302,9 @@ This gives the intended behavior:
   concurrent requests.
 
 For an existing database, run
-[`migrations/001_apm_uniqueness_and_ownership.sql`](migrations/001_apm_uniqueness_and_ownership.sql),
-then [`migrations/002_group_apm_authorization.sql`](migrations/002_group_apm_authorization.sql),
-and finally [`migrations/003_architecture_aligned_states.sql`](migrations/003_architecture_aligned_states.sql)
+[`orchestrator_agent/migrations/001_apm_uniqueness_and_ownership.sql`](orchestrator_agent/migrations/001_apm_uniqueness_and_ownership.sql),
+then [`orchestrator_agent/migrations/002_group_apm_authorization.sql`](orchestrator_agent/migrations/002_group_apm_authorization.sql),
+and finally [`orchestrator_agent/migrations/003_architecture_aligned_states.sql`](orchestrator_agent/migrations/003_architecture_aligned_states.sql)
 before starting this version. The legacy `apm_group_access` table is no longer
 read or seeded by the application.
 
@@ -434,7 +434,7 @@ details such as a rejection reason.
 | `get_journey_status_by_apm_id(apm_id)` | Recover a Journey authorized for the verified user's group | No |
 
 Neither approval nor rejection is registered as an ADK tool. The backend-only
-simulator is a separate module, `cloud_journey.approval_backend`. All state changes
+simulator is a separate module, `orchestrator_agent.cloud_journey.approval_backend`. All state changes
 still pass through the central state machine. The original `continue_journey`
 function remains a compatibility API for the initial PoC contract, but Cloud
 Compass cannot call it.
@@ -504,7 +504,7 @@ In a second terminal, mimic the approval backend. Replace the ID and use 60–12
 seconds for the visible demo:
 
 ```powershell
-python -m cloud_journey.approval_backend J-XXXXXXXX --decision approve --reviewer reviewer --delay-seconds 60
+python -m orchestrator_agent.cloud_journey.approval_backend J-XXXXXXXX --decision approve --reviewer reviewer --delay-seconds 60
 ```
 
 Immediately return to Cloud Compass and send:
@@ -549,7 +549,7 @@ Who is responsible for the decision? Confirm that I cannot reject it from Cloud 
 In the separate backend terminal:
 
 ```powershell
-python -m cloud_journey.approval_backend J-XXXXXXXX --decision reject --reviewer reviewer --delay-seconds 60 --reason "Network firewall design is incomplete"
+python -m orchestrator_agent.cloud_journey.approval_backend J-XXXXXXXX --decision reject --reviewer reviewer --delay-seconds 60 --reason "Network firewall design is incomplete"
 ```
 
 Then ask Cloud Compass:

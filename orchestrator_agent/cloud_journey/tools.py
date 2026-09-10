@@ -12,7 +12,7 @@ from google.adk.tools import ToolContext
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from cloud_journey.authorization import (
+from .authorization import (
     DEFAULT_ACCESS_GROUP_MEMBERS,
     DEFAULT_ACCESS_GROUP_NAMES,
     DEFAULT_APM_GROUP_ACCESS,
@@ -23,20 +23,20 @@ from cloud_journey.authorization import (
     evaluate_approval_authorization,
     get_simulated_user,
 )
-from cloud_journey.database import SessionLocal, init_db
-from cloud_journey.identity import (
+from .database import SessionLocal, init_db
+from .identity import (
     VerifiedGoogleIdentity,
     VerifiedIdentityRequired,
     get_verified_identity,
 )
-from cloud_journey.models import (
+from .models import (
     AccessGroup,
     AccessGroupMember,
     ApmGroupAssignment,
     JourneyEvent,
     JourneyOperation,
 )
-from cloud_journey.state_machine import (
+from .state_machine import (
     Actor,
     ConcurrentTransition,
     DuplicateApmId,

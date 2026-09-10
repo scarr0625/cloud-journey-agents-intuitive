@@ -5,8 +5,11 @@ from uuid import uuid4
 
 from google.genai import types
 
-from cloud_journey.capability import DURABLE_JOURNEY_TOOLS
-from cloud_journey.identity import VERIFIED_USER_SUBJECT_KEY, verified_identity_state
+from orchestrator_agent.cloud_journey.capability import DURABLE_JOURNEY_TOOLS
+from orchestrator_agent.cloud_journey.identity import (
+    VERIFIED_USER_SUBJECT_KEY,
+    verified_identity_state,
+)
 from orchestrator_agent import main
 
 

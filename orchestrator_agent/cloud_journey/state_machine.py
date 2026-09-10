@@ -13,7 +13,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from cloud_journey.models import (
+from .models import (
     AccessGroupMember,
     ApmGroupAssignment,
     Journey,

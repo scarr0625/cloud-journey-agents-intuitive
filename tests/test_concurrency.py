@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
-from cloud_journey.state_machine import ConcurrentTransition, InvalidTransition
+from orchestrator_agent.cloud_journey.state_machine import (
+    ConcurrentTransition,
+    InvalidTransition,
+)
 
 
 def test_concurrent_approval_and_rejection_only_one_succeeds(service) -> None:

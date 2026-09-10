@@ -6,8 +6,8 @@ import pytest
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-from cloud_journey.models import Base
-from cloud_journey.tools import JourneyService
+from orchestrator_agent.cloud_journey.models import Base
+from orchestrator_agent.cloud_journey.tools import JourneyService
 
 
 @pytest.fixture

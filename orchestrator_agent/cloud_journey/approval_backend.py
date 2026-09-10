@@ -9,7 +9,7 @@ import argparse
 import json
 import time
 
-from cloud_journey.tools import get_service
+from .tools import get_service
 
 
 def simulate_backend_decision(
