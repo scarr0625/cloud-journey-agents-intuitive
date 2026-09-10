@@ -10,7 +10,7 @@ from orchestrator_agent.cloud_journey.identity import (
     VERIFIED_USER_SUBJECT_KEY,
     verified_identity_state,
 )
-from orchestrator_agent import main
+from orchestrator_agent.app import main
 
 
 def test_main_orchestrator_owns_durable_journey_tools() -> None:

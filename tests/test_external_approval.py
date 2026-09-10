@@ -6,7 +6,7 @@ import pytest
 
 from orchestrator_agent.cloud_journey import approval_backend
 from orchestrator_agent.cloud_journey.state_machine import InvalidTransition
-from orchestrator_agent.main import root_agent
+from orchestrator_agent.app.main import root_agent
 
 
 def waiting_journey(service) -> str:

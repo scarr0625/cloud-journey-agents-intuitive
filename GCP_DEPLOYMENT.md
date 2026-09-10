@@ -1,6 +1,6 @@
 # Deploy the Orchestrator to Cloud Run
 
-The FastAPI application in `orchestrator_agent/main.py` is the only deployment
+The FastAPI application in `orchestrator_agent/app/main.py` is the only deployment
 entry point. No Python deployment script or Agent Runtime object is required.
 Journey state remains in Cloud SQL; HTTP conversation sessions are process-local
 and may be recreated, while a Journey remains recoverable by Journey ID or APM ID.
@@ -68,7 +68,7 @@ gcloud run deploy $SERVICE `
   --region=$REGION `
   --service-account=$RUNTIME_SA `
   --command=uvicorn `
-  --args="orchestrator_agent.main:app,--host=0.0.0.0,--port=8080" `
+  --args="orchestrator_agent.app.main:app,--host=0.0.0.0,--port=8080" `
   --set-env-vars=$ENV_VARS `
   --set-secrets=DB_PASSWORD=journey-db-password:latest `
   --allow-unauthenticated

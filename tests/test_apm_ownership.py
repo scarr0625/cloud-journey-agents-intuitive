@@ -12,7 +12,7 @@ from orchestrator_agent.cloud_journey.state_machine import (
     JourneyPersistenceError,
 )
 from orchestrator_agent.cloud_journey.tools import ApmAccessDenied
-from orchestrator_agent.main import root_agent
+from orchestrator_agent.app.main import root_agent
 
 
 @dataclass(frozen=True)

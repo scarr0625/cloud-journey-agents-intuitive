@@ -152,7 +152,7 @@ come from a trusted backend claim or directory, never from chat text.
 - `journey_operations` records for command outcomes and future idempotency/retry work
 - Globally unique APM IDs enforced by the database
 - Database-backed group-to-APM authorization keyed by verified Google subjects
-- One `orchestrator_agent.main.root_agent` composing two specialist-routing tools
+- One `orchestrator_agent.app.main.root_agent` composing two specialist-routing tools
   with eight durable Journey lifecycle tools
 - Self-contained unit/acceptance tests, including process restart and conflicting actions
 
@@ -235,7 +235,7 @@ The migration order is:
 After recreation, start the agent:
 
 ```powershell
-uvicorn orchestrator_agent.main:app --reload
+uvicorn orchestrator_agent.app.main:app --reload
 ```
 
 Open `http://127.0.0.1:8000/playground`, then test an allowed request with
@@ -444,7 +444,7 @@ Compass cannot call it.
 From the repository root, run:
 
 ```powershell
-uvicorn orchestrator_agent.main:app --reload
+uvicorn orchestrator_agent.app.main:app --reload
 ```
 
 Then open `http://127.0.0.1:8000/playground`. The response includes a session ID,
