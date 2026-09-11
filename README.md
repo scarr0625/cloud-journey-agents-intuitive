@@ -29,12 +29,12 @@ application facts, proposed plan, access group, and audit history.
 
 Here is the happy-path example using the seeded demo data:
 
-1. **Sam signs in with Google and starts APM `100401`.** The HTTP layer verifies
+1. **Sam signs in with Google and starts `APM004001`.** The HTTP layer verifies
    Sam's Google token and binds its stable subject to the ADK session. PostgreSQL
-   confirms that subject belongs to `GROUP_1` and APM `100401` is assigned there.
+   confirms that subject belongs to `GROUP_1` and `APM004001` is assigned there.
 2. **The Journey is created and its APM is validated.** PostgreSQL stores a new
    Journey with a generated ID such as `J-12AB34CD`, its owning group, requester,
-   state, and version. Starting `100401` again does not create a second Journey;
+   state, and version. Starting `APM004001` again does not create a second Journey;
    an authorized group member receives the existing one.
 3. **Cloud Compass gathers application knowledge.** Sam describes the application,
    environments, dependencies, data classification, and availability needs. Those
@@ -51,7 +51,7 @@ Here is the happy-path example using the seeded demo data:
    simulates identity provisioning, App Factory preparation, Cloud Build, and
    deployment validation. Each checkpoint is committed before the next one begins.
 7. **The Journey can be recovered later.** If Cloud Run is restarted, another
-   verified subject in `GROUP_1` can retrieve APM `100401`. A verified member of
+   verified subject in `GROUP_1` can retrieve `APM004001`. A verified member of
    `GROUP_2` receives the same non-disclosing response as for an unknown APM ID.
 
 In short:
@@ -100,6 +100,10 @@ update and its audit event commit in the same transaction.
 **One Journey per APM ID.** A database uniqueness constraint makes an APM ID global
 across chats and users. Repeated or concurrent starts by the authorized group return
 the same Journey rather than creating parallel business requests.
+
+**Canonical APM IDs.** Journey identifiers are stored and displayed as `APM00####`
+with no spaces, for example `APM004001`. The UI also accepts `004001` or `4001` and
+normalizes it to `APM004001`; legacy values such as `100401` are rejected.
 
 **Clear PoC limits.** Google authenticates the user, while business authorization
 still depends on administrator-managed `access_group_members` rows keyed by the
@@ -192,7 +196,7 @@ DATABASE_URL=postgresql+psycopg://journey:URL_ENCODED_PASSWORD@127.0.0.1:5432/du
 
 ### Recreate the Cloud SQL database from scratch
 
-The repository includes a baseline migration followed by three incremental
+The repository includes a baseline migration followed by four incremental
 migrations. Stop any running agent that uses this database first. With the Cloud
 SQL Auth Proxy listening on `127.0.0.1:5432`, permanently delete and recreate
 only the `durable_journey` database by running:
@@ -231,6 +235,8 @@ The migration order is:
 4. `003_architecture_aligned_states.sql` — updates active Journey projections
    from the original PoC state names to the architecture-aligned names. It
    preserves history and appends an auditable migration transition.
+5. `004_canonical_apm_ids.sql` — migrates the original numeric PoC identifiers
+   to the canonical `APM00####` format and refreshes the group assignments.
 
 After recreation, start the agent:
 
@@ -239,8 +245,8 @@ uvicorn orchestrator_agent.app.main:app --reload
 ```
 
 Open `http://127.0.0.1:8000/playground`, then test an allowed request with
-`Start a journey with APM ID 100401.` To test denial, sign in with a verified
-subject mapped to `GROUP_2` and try APM `100401`.
+`Start a journey with APM ID APM004001.` To test denial, sign in with a verified
+subject mapped to `GROUP_2` and try `APM004001`.
 
 The Auth Proxy exposes the local TCP endpoint; it does not create a local Docker
 database. The application can create missing PoC tables on its first tool call,
@@ -264,7 +270,7 @@ backends that do not implement row locks.
 
 An APM ID identifies one Journey globally, not one Journey per chat session. The
 database has a unique constraint on `journeys.apm_id`, so two simultaneous agent
-requests cannot create separate Journeys for `100401`.
+requests cannot create separate Journeys for `APM004001`.
 
 The verified Google `sub` is the only user key accepted by Journey tools. It is
 injected at the HTTP boundary and cross-checked against `ToolContext.user_id`;
@@ -282,8 +288,8 @@ repeatable. A deployed database must use real verified Google subjects instead:
 
 | Test group | Placeholder subjects | Available APM IDs |
 |---|---|---|
-| `GROUP_1` | `sam`, `ivan`, `adi` | `100401`, `100402` |
-| `GROUP_2` | `abdur`, `ajir` | `100403`, `100404` |
+| `GROUP_1` | `sam`, `ivan`, `adi` | `APM004001`, `APM004002` |
+| `GROUP_2` | `abdur`, `ajir` | `APM004003`, `APM004004` |
 
 `journeys.owner_subject` records the verified Google subject for audit. Every ADK
 read or change checks `journeys.access_group_id` against that subject's current
@@ -304,7 +310,8 @@ This gives the intended behavior:
 For an existing database, run
 [`orchestrator_agent/migrations/001_apm_uniqueness_and_ownership.sql`](orchestrator_agent/migrations/001_apm_uniqueness_and_ownership.sql),
 then [`orchestrator_agent/migrations/002_group_apm_authorization.sql`](orchestrator_agent/migrations/002_group_apm_authorization.sql),
-and finally [`orchestrator_agent/migrations/003_architecture_aligned_states.sql`](orchestrator_agent/migrations/003_architecture_aligned_states.sql)
+then [`orchestrator_agent/migrations/003_architecture_aligned_states.sql`](orchestrator_agent/migrations/003_architecture_aligned_states.sql),
+and finally [`orchestrator_agent/migrations/004_canonical_apm_ids.sql`](orchestrator_agent/migrations/004_canonical_apm_ids.sql)
 before starting this version. The legacy `apm_group_access` table is no longer
 read or seeded by the application.
 
@@ -318,8 +325,8 @@ The local simulator models that backend with these identities:
 
 | User | Business role | Simulated AD groups | Cloud Compass access | Approval-backend access |
 |---|---|---|---|---|
-| `sam`, `ivan`, `adi` | `PROJECT_OWNER` | `GROUP_1` | APMs `100401`, `100402` | None |
-| `abdur`, `ajir` | `PROJECT_OWNER` | `GROUP_2` | APMs `100403`, `100404` | None |
+| `sam`, `ivan`, `adi` | `PROJECT_OWNER` | `GROUP_1` | APMs `APM004001`, `APM004002` | None |
+| `abdur`, `ajir` | `PROJECT_OWNER` | `GROUP_2` | APMs `APM004003`, `APM004004` | None |
 | `reviewer` | `REVIEWER` | `CLOUD_JOURNEY_APPROVERS` | General knowledge only | Approve/reject others' requests |
 | `developer` | `DEVELOPER` | none | General knowledge only | None |
 
@@ -462,7 +469,7 @@ should resolve to the prior tool result.
 ```text
 Before I start, explain what Cloud Compass can help me with during an application cloud journey.
 
-Start a Cloud Journey for APM 100401.
+Start a Cloud Journey for APM004001.
 
 What do you need to know about this application before recommending a cloud plan?
 
@@ -533,7 +540,7 @@ WAITING_FOR_APPROVAL
 ### Demo 2: independent reviewer rejects with a persisted reason
 
 ```text
-Start a Cloud Journey for APM 100402.
+Start a Cloud Journey for APM004002.
 
 The application is Partner Portal. It is a Tier 2 service on Windows VMs with
 development and production environments. Dependencies are SQL Server, corporate
@@ -563,7 +570,7 @@ Expected final state: `REJECTED`. Cloud Compass observes it and does not resume.
 ### Demo 3: new-session recovery and group isolation
 
 ```text
-Start a Cloud Journey for APM 100403.
+Start a Cloud Journey for APM004003.
 
 The application is Reporting Service. It is Tier 2, runs on Linux VMs, has test
 and production environments, depends on PostgreSQL and SFTP, contains internal
@@ -578,7 +585,7 @@ select another member of `GROUP_2` before asking for status. The new chat has no
 Journey ID and no previous conversation state:
 
 ```text
-I am ajir. Could you give me the current status of APM ID 100403?
+I am ajir. Could you give me the current status of APM ID APM004003?
 ```
 
 Expected response: Cloud Compass calls `get_journey_status_by_apm_id` and reports
@@ -588,7 +595,7 @@ because the verified caller's subject is mapped to `GROUP_2`.
 Now open another new session and repeat as a `GROUP_1` member:
 
 ```text
-Could you give me the current status of APM ID 100403?
+Could you give me the current status of APM ID APM004003?
 ```
 
 Expected response:
@@ -597,19 +604,19 @@ Expected response:
 I could not find a Journey you can access for that APM ID.
 ```
 
-It must not confirm that `100403` exists or reveal its Journey ID, requester,
+It must not confirm that `APM004003` exists or reveal its Journey ID, requester,
 state, plan, or history. Finally, open a new session as another `GROUP_2` member
 and send:
 
 ```text
-Start a Cloud Journey for APM 100403.
+Start a Cloud Journey for APM004003.
 ```
 
 Cloud Compass returns the existing Journey with `created=false`; it does not
 create a duplicate. To finish the original workflow, ask:
 
 ```text
-Wait up to two minutes for an external approval of APM ID 100403. If it is
+Wait up to two minutes for an external approval of APM ID APM004003. If it is
 approved, resume execution.
 ```
 

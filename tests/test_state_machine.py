@@ -12,7 +12,7 @@ from orchestrator_agent.app.cloud_journey.state_machine import (
 
 
 def test_normal_journey_stops_for_approval_then_completes(service) -> None:
-    started = service.start("100401", "sam")
+    started = service.start("APM004001", "sam")
     journey_id = started["journey_id"]
 
     assert started["state_path"] == [

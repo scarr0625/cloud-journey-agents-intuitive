@@ -35,22 +35,22 @@ def verified_context(subject: str) -> ToolContextStub:
 
 
 def test_apm_id_is_globally_unique_and_same_group_gets_existing(service) -> None:
-    first = service.start("100401", "sam", "owner-subject-a")
+    first = service.start("APM004001", "sam", "owner-subject-a")
 
-    repeated = service.start("100401", "ivan", "owner-subject-b")
+    repeated = service.start("APM004001", "ivan", "owner-subject-b")
 
     assert first["created"] is True
     assert repeated["created"] is False
     assert repeated["journey_id"] == first["journey_id"]
 
     with pytest.raises(ApmAccessDenied):
-        service.start("100401", "abdur", "owner-subject-c")
+        service.start("APM004001", "abdur", "owner-subject-c")
 
     # The database constraint is the final guard if application-level prechecks
     # race or are bypassed.
     with pytest.raises(DuplicateApmId):
         service.state_machine.create_journey(
-            apm_id="100401",
+            apm_id="APM004001",
             requested_by="sam",
             requested_by_email="sam@example.com",
             role="PROJECT_OWNER",
@@ -79,7 +79,7 @@ def test_new_session_with_same_owner_can_recover_status_by_apm(
     original_session = verified_context("sam")
     restarted_session = verified_context("ivan")
 
-    created = tools.start_journey("100401", original_session)
+    created = tools.start_journey("APM004001", original_session)
     service.continue_journey(created["journey_id"])
 
     # Recreate the service as well as the chat context to prove recovery does
@@ -87,7 +87,7 @@ def test_new_session_with_same_owner_can_recover_status_by_apm(
     restarted_service = tools.JourneyService(service.session_factory)
     monkeypatch.setattr(tools, "get_service", lambda: restarted_service)
 
-    recovered = tools.get_journey_status_by_apm_id("100401", restarted_session)
+    recovered = tools.get_journey_status_by_apm_id("APM004001", restarted_session)
 
     assert recovered["ok"] is True
     assert recovered["journey_id"] == created["journey_id"]
@@ -101,10 +101,10 @@ def test_different_group_cannot_discover_apm_or_journey_details(
     monkeypatch.setattr(tools, "get_service", lambda: service)
     owner = verified_context("sam")
     other_user = verified_context("abdur")
-    created = tools.start_journey("100401", owner)
+    created = tools.start_journey("APM004001", owner)
 
-    by_apm = tools.get_journey_status_by_apm_id("100401", other_user)
-    missing_apm = tools.get_journey_status_by_apm_id("does-not-exist", other_user)
+    by_apm = tools.get_journey_status_by_apm_id("APM004001", other_user)
+    missing_apm = tools.get_journey_status_by_apm_id("APM009999", other_user)
     by_journey_id = tools.get_journey_status(created["journey_id"], other_user)
     missing_journey = tools.get_journey_status("J-DOES-NOT-EXIST", other_user)
 
@@ -112,13 +112,13 @@ def test_different_group_cannot_discover_apm_or_journey_details(
     assert by_journey_id["status_code"] == 404
     assert by_apm["message"] == missing_apm["message"]
     assert by_journey_id["message"] == missing_journey["message"]
-    assert "100401" not in str(by_apm)
+    assert "APM004001" not in str(by_apm)
     assert created["journey_id"] not in str(by_journey_id)
 
 
 def test_non_project_owner_cannot_start_journey(service) -> None:
     with pytest.raises(tools.ProjectOwnerRequired):
-        service.start("100401", "developer", "developer-subject")
+        service.start("APM004001", "developer", "developer-subject")
 
 
 def test_runtime_owner_identity_is_not_exposed_to_the_model_schema() -> None:

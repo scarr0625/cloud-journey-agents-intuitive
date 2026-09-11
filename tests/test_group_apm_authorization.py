@@ -33,11 +33,11 @@ def verified_context(subject: str) -> ToolContextStub:
 @pytest.mark.parametrize(
     ("user_name", "allowed_apm", "denied_apm"),
     [
-        ("sam", "100401", "100403"),
-        ("ivan", "100402", "100404"),
-        ("adi", "100401", "100403"),
-        ("abdur", "100403", "100401"),
-        ("ajir", "100404", "100402"),
+        ("sam", "APM004001", "APM004003"),
+        ("ivan", "APM004002", "APM004004"),
+        ("adi", "APM004001", "APM004003"),
+        ("abdur", "APM004003", "APM004001"),
+        ("ajir", "APM004004", "APM004002"),
     ],
 )
 def test_start_enforces_group_to_apm_mapping(
@@ -56,7 +56,7 @@ def test_same_group_member_can_read_existing_journey(service, monkeypatch) -> No
     sam_session = verified_context("sam")
     ivan_session = verified_context("ivan")
 
-    created = tools.start_journey("100401", sam_session)
+    created = tools.start_journey("APM004001", sam_session)
     updated = tools.record_application_inventory(
         created["journey_id"],
         "Shared application",
@@ -68,7 +68,7 @@ def test_same_group_member_can_read_existing_journey(service, monkeypatch) -> No
         "99.9%",
         ivan_session,
     )
-    status = tools.get_journey_status_by_apm_id("100401", ivan_session)
+    status = tools.get_journey_status_by_apm_id("APM004001", ivan_session)
 
     assert created["requested_by"] == "sam"
     assert created["requested_by_email"] == "sam@example.com"
@@ -98,8 +98,8 @@ def test_verified_identity_is_required_and_must_match_runtime_subject(
         ),
     )
 
-    missing = tools.get_journey_status_by_apm_id("100401", session)
-    forged = tools.get_journey_status_by_apm_id("100401", mismatched)
+    missing = tools.get_journey_status_by_apm_id("APM004001", session)
+    forged = tools.get_journey_status_by_apm_id("APM004001", mismatched)
 
     assert missing["status_code"] == 401
     assert missing["error"] == "VerifiedIdentityRequired"
@@ -111,13 +111,13 @@ def test_unmapped_and_cross_group_apm_have_same_denial(service, monkeypatch) -> 
     monkeypatch.setattr(tools, "get_service", lambda: service)
     session = verified_context("abdur")
 
-    cross_group = tools.get_journey_status_by_apm_id("100401", session)
-    unmapped = tools.get_journey_status_by_apm_id("999999", session)
+    cross_group = tools.get_journey_status_by_apm_id("APM004001", session)
+    unmapped = tools.get_journey_status_by_apm_id("APM009999", session)
 
     assert cross_group["status_code"] == 403
     assert cross_group["message"] == unmapped["message"]
-    assert "100401" not in str(cross_group)
-    assert "999999" not in str(unmapped)
+    assert "APM004001" not in str(cross_group)
+    assert "APM009999" not in str(unmapped)
 
 
 def test_database_membership_is_the_authorization_source(service) -> None:
@@ -130,4 +130,4 @@ def test_database_membership_is_the_authorization_source(service) -> None:
         )
 
     with pytest.raises(ApmAccessDenied):
-        service.start("100401", "sam")
+        service.start("APM004001", "sam")

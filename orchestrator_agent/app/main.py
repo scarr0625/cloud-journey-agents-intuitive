@@ -204,6 +204,9 @@ root_agent = Agent(
         "and their records: APM IDs (APM######), names, owners, business units, "
         "environments, criticality, support groups, on-call details, SLAs, "
         "dependencies, and incidents (INC-####).\n\n"
+        "A Journey lifecycle request that includes an APM ID must use the matching "
+        "Journey tool. Do not call query_apm merely to validate that identifier; "
+        "the Journey authorization mapping is authoritative for that request.\n\n"
         "DECIDING BETWEEN THEM\n"
         "The distinction is the application catalogue versus the cloud project. "
         "'Who owns the Order Router?' is APM. 'Which Cloud Run services are "
@@ -462,7 +465,7 @@ PLAYGROUND_HTML = r"""<!doctype html>
       <h2>Link an existing APM ID</h2>
       <p>Cloud Compass will verify your group access, recover an existing Journey, or start a new durable Journey.</p>
       <label for="apm-input">APM ID</label>
-      <input id="apm-input" name="apm_id" placeholder="e.g. 100401" maxlength="64" required autocomplete="off">
+      <input id="apm-input" name="apm_id" placeholder="e.g. APM004001" maxlength="9" required autocomplete="off">
       <div class="dialog-actions">
         <button type="button" class="secondary" id="cancel-link">Cancel</button>
         <button type="submit" class="primary" id="link-submit">Link APM ID →</button>
@@ -541,7 +544,17 @@ PLAYGROUND_HTML = r"""<!doctype html>
     })[char]);
     const prettyState = value => String(value || 'Not started')
       .toLowerCase().replaceAll('_', ' ').replace(/\b\w/g, char => char.toUpperCase());
-    const displayApm = value => /^\d+$/.test(value) ? `APM${value}` : value;
+    function normalizeApm(value) {
+      const compact = String(value || '').trim().toUpperCase().replace(/[\s-]+/g, '');
+      let number = compact.startsWith('APM') ? compact.slice(3) : compact;
+      if (/^\d{4}$/.test(number)) number = `00${number}`;
+      const canonical = `APM${number}`;
+      if (!/^APM00\d{4}$/.test(canonical)) {
+        throw new Error('Use the APM00#### convention, for example APM004001.');
+      }
+      return canonical;
+    }
+    const displayApm = value => value ? String(value).toUpperCase() : '';
     const appName = journey => journey?.context?.inventory?.application_name || `Application ${displayApm(journey?.apm_id || '')}`;
     const storageKey = () => `cloudCompassApms:${userProfile?.sub || 'unknown'}`;
     const chatStorageKey = () => `cloudCompassChats:${userProfile?.sub || 'unknown'}`;
@@ -807,8 +820,15 @@ PLAYGROUND_HTML = r"""<!doctype html>
     }
 
     async function linkApm(apm) {
-      const normalized = apm.trim().replace(/^APM[- ]?/i, '');
-      if (!normalized) return;
+      let normalized;
+      try {
+        normalized = normalizeApm(apm);
+        apmInput.setCustomValidity('');
+      } catch (error) {
+        apmInput.setCustomValidity(error.message);
+        apmInput.reportValidity();
+        return;
+      }
       linkSubmit.disabled = true;
       linkSubmit.innerHTML = '<span class="loading"></span> Linking';
       activeApm = normalized;
@@ -820,7 +840,7 @@ PLAYGROUND_HTML = r"""<!doctype html>
           chat.messages.push({role: 'agent', text: `I couldn’t find an existing Journey for ${displayApm(normalized)}. I’ll verify access and start one now.`});
           openChat();
           renderMessages();
-          const answer = await runAgent(`Start a durable Cloud Journey for APM ${normalized}. Return its Journey ID and current durable state.`, normalized, chat);
+          const answer = await runAgent(`Start a durable Cloud Journey for ${normalized}. Return its Journey ID and current durable state.`, normalized, chat);
           chat.messages.push({role: 'agent', text: answer});
           journey = await fetchJourney(normalized);
         }
@@ -847,7 +867,16 @@ PLAYGROUND_HTML = r"""<!doctype html>
     function signedIn(token, profile) {
       userIdToken = token;
       userProfile = profile;
-      try { knownApms = JSON.parse(localStorage.getItem(storageKey()) || '[]'); } catch { knownApms = []; }
+      try {
+        knownApms = JSON.parse(localStorage.getItem(storageKey()) || '[]')
+          .map(value => {
+            try { return normalizeApm(value); } catch { return null; }
+          })
+          .filter((value, index, values) => value && values.indexOf(value) === index);
+        localStorage.setItem(storageKey(), JSON.stringify(knownApms));
+      } catch {
+        knownApms = [];
+      }
       try { chatSessions = JSON.parse(sessionStorage.getItem(chatStorageKey()) || '{}'); } catch { chatSessions = {}; }
       activeApm = knownApms[0] || null;
       who.innerHTML = '';
@@ -943,6 +972,7 @@ PLAYGROUND_HTML = r"""<!doctype html>
     document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => { currentView = tab.dataset.view; renderScreen(); }));
     document.querySelectorAll('.quick-actions button').forEach(button => button.addEventListener('click', () => sendQuery(button.dataset.q)));
     linkForm.addEventListener('submit', event => { event.preventDefault(); linkApm(apmInput.value); });
+    apmInput.addEventListener('input', () => apmInput.setCustomValidity(''));
     document.getElementById('cancel-link').addEventListener('click', () => linkDialog.close());
     compassFab.addEventListener('click', () => openChat());
     document.getElementById('close-chat').addEventListener('click', closeChat);

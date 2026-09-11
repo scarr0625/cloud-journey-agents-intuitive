@@ -9,7 +9,7 @@ from orchestrator_agent.app.cloud_journey.state_machine import (
 
 
 def test_concurrent_approval_and_rejection_only_one_succeeds(service) -> None:
-    journey_id = service.start("100401", "sam")["journey_id"]
+    journey_id = service.start("APM004001", "sam")["journey_id"]
     service.continue_journey(journey_id)
 
     def approve() -> str:

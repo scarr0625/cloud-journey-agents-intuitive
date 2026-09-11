@@ -146,12 +146,12 @@ def test_journey_progress_endpoint_uses_verified_google_subject(monkeypatch) -> 
     )
 
     response = main.journey_status_by_apm(
-        "100401", x_user_authorization="Bearer verified-token"
+        "APM004001", x_user_authorization="Bearer verified-token"
     )
 
     assert response == {
         "ok": True,
-        "apm_id": "100401",
+        "apm_id": "APM004001",
         "subject": "google-subject-789",
     }
 
@@ -167,17 +167,17 @@ def test_journey_portfolio_is_scoped_to_verified_users_groups(monkeypatch) -> No
 
         def list_apm_ids_for_groups(self, groups):
             assert groups == frozenset({"GROUP_1"})
-            return ["100401", "100402"]
+            return ["APM004001", "APM004002"]
 
         def find_journey_by_apm_id(self, apm_id: str):
-            return visible if apm_id == "100401" else hidden
+            return visible if apm_id == "APM004001" else hidden
 
     class FakeService:
         state_machine = FakeStateMachine()
 
         def status(self, journey_id: str):
             assert journey_id == "J-VISIBLE"
-            return {"journey_id": journey_id, "apm_id": "100401"}
+            return {"journey_id": journey_id, "apm_id": "APM004001"}
 
     monkeypatch.setattr(main, "OAUTH_CLIENT_ID", "oauth-client")
     monkeypatch.setattr(main, "get_service", lambda: FakeService())
@@ -196,4 +196,6 @@ def test_journey_portfolio_is_scoped_to_verified_users_groups(monkeypatch) -> No
         x_user_authorization="Bearer verified-token"
     )
 
-    assert response == {"journeys": [{"journey_id": "J-VISIBLE", "apm_id": "100401"}]}
+    assert response == {
+        "journeys": [{"journey_id": "J-VISIBLE", "apm_id": "APM004001"}]
+    }

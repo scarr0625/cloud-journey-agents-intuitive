@@ -6,7 +6,7 @@ from orchestrator_agent.app.cloud_journey.tools import AuthorizationDenied
 
 
 def waiting_journey(service) -> str:
-    journey_id = service.start("100401", "sam")["journey_id"]
+    journey_id = service.start("APM004001", "sam")["journey_id"]
     service.record_inventory(
         journey_id,
         "Billing API",

@@ -16,8 +16,8 @@ SUPPORTED_APPROVAL_ACTIONS = frozenset({"approve", "reject"})
 # Test fixtures use short placeholder subjects. Production rows must contain
 # stable subjects obtained from verified Google identity or a trusted directory.
 DEFAULT_APM_GROUP_ACCESS: dict[str, frozenset[str]] = {
-    APM_GROUP_1: frozenset({"100401", "100402"}),
-    APM_GROUP_2: frozenset({"100403", "100404"}),
+    APM_GROUP_1: frozenset({"APM004001", "APM004002"}),
+    APM_GROUP_2: frozenset({"APM004003", "APM004004"}),
 }
 DEFAULT_ACCESS_GROUP_NAMES: dict[str, str] = {
     APM_GROUP_1: "Cloud Journey Group 1",

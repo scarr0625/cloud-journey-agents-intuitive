@@ -4,8 +4,8 @@
 -- Journey data and replaces all group-authorization rows with the canonical PoC
 -- dataset used by the application:
 --
---   GROUP_1: sam, ivan, adi  -> 100401, 100402
---   GROUP_2: abdur, ajir     -> 100403, 100404
+--   GROUP_1: sam, ivan, adi  -> APM004001, APM004002
+--   GROUP_2: abdur, ajir     -> APM004003, APM004004
 --
 -- Stop every agent connected to this database before running the file.
 -- Execute with psql and ON_ERROR_STOP=1 so a failure cannot commit partial data.
@@ -45,10 +45,10 @@ VALUES
 
 INSERT INTO apm_group_assignments (apm_id, group_id)
 VALUES
-    ('100401', 'GROUP_1'),
-    ('100402', 'GROUP_1'),
-    ('100403', 'GROUP_2'),
-    ('100404', 'GROUP_2');
+    ('APM004001', 'GROUP_1'),
+    ('APM004002', 'GROUP_1'),
+    ('APM004003', 'GROUP_2'),
+    ('APM004004', 'GROUP_2');
 
 COMMIT;
 

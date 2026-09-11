@@ -106,5 +106,5 @@ context, or audit history.
 After registering the subject, open `$SERVICE_URL/playground` and start with:
 
 ```text
-Start a durable Cloud Journey for APM 100401.
+Start a durable Cloud Journey for APM004001.
 ```

@@ -293,7 +293,7 @@ class StateMachine:
                         to_state=JourneyState.CREATED.value,
                         actor_type="USER",
                         actor_id=requested_by,
-                        message=f"Journey created for APM {apm_id}",
+                        message=f"Journey created for {apm_id}",
                         event_metadata={},
                     )
                 )

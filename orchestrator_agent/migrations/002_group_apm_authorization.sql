@@ -45,10 +45,10 @@ ON CONFLICT (group_id, user_subject) DO NOTHING;
 
 INSERT INTO apm_group_assignments (apm_id, group_id)
 VALUES
-    ('100401', 'GROUP_1'),
-    ('100402', 'GROUP_1'),
-    ('100403', 'GROUP_2'),
-    ('100404', 'GROUP_2')
+    ('APM004001', 'GROUP_1'),
+    ('APM004002', 'GROUP_1'),
+    ('APM004003', 'GROUP_2'),
+    ('APM004004', 'GROUP_2')
 ON CONFLICT (apm_id) DO UPDATE SET group_id = EXCLUDED.group_id;
 
 ALTER TABLE journeys

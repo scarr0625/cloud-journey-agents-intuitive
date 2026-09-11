@@ -12,6 +12,8 @@ from google.adk.tools import ToolContext
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
+from .apm import normalize_apm_id
+
 from .authorization import (
     DEFAULT_ACCESS_GROUP_MEMBERS,
     DEFAULT_ACCESS_GROUP_NAMES,
@@ -368,10 +370,8 @@ class JourneyService:
         requested_by: str,
         role: str,
     ) -> dict[str, Any]:
-        apm_id = apm_id.strip()
+        apm_id = normalize_apm_id(apm_id)
         subject = subject.strip()
-        if not apm_id:
-            raise ValueError("apm_id must not be empty")
         if not subject:
             raise ValueError("authenticated subject must not be empty")
         access_decision = self.require_apm_access_for_subject(
@@ -989,9 +989,7 @@ class JourneyService:
     def status_by_apm_id_for_subject(
         self, apm_id: str, user_subject: str
     ) -> dict[str, Any]:
-        apm_id = apm_id.strip()
-        if not apm_id:
-            raise ValueError("apm_id must not be empty")
+        apm_id = normalize_apm_id(apm_id)
         self.require_apm_access_for_subject(apm_id, user_subject)
         user_groups = self.state_machine.get_access_groups_for_user(user_subject)
         journey = self.state_machine.get_group_journey_by_apm_id(

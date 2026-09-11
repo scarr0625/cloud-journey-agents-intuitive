@@ -10,7 +10,7 @@ from orchestrator_agent.app.main import root_agent
 
 
 def waiting_journey(service) -> str:
-    journey_id = service.start("100401", "sam")["journey_id"]
+    journey_id = service.start("APM004001", "sam")["journey_id"]
     service.continue_journey(journey_id)
     return journey_id
 
