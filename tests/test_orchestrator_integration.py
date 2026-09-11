@@ -100,3 +100,86 @@ def test_verified_google_subject_is_injected_into_the_adk_session(monkeypatch) -
     assert session is not None
     assert session.state[VERIFIED_USER_SUBJECT_KEY] == "google-subject-456"
     assert "verified-token" not in str(session.state)
+
+
+def test_playground_starts_locked_and_renders_journey_workspace(monkeypatch) -> None:
+    monkeypatch.setattr(main, "OAUTH_CLIENT_ID", "oauth-client")
+
+    html = main.playground()
+
+    assert '<fieldset class="interaction" id="interaction" disabled>' in html
+    assert "Portfolio Overview" in html
+    assert "Journey phases" in html
+    assert "WAITING_FOR_APPROVAL: 1" in html
+
+
+def test_journey_progress_endpoint_uses_verified_google_subject(monkeypatch) -> None:
+    class FakeService:
+        def status_by_apm_id_for_subject(self, apm_id: str, subject: str):
+            return {"ok": True, "apm_id": apm_id, "subject": subject}
+
+    monkeypatch.setattr(main, "OAUTH_CLIENT_ID", "oauth-client")
+    monkeypatch.setattr(main, "get_service", lambda: FakeService())
+    monkeypatch.setattr(
+        main.id_token,
+        "verify_oauth2_token",
+        lambda *_args, **_kwargs: {
+            "aud": "oauth-client",
+            "sub": "google-subject-789",
+            "email_verified": True,
+            "email": "journey-owner@example.com",
+        },
+    )
+
+    response = main.journey_status_by_apm(
+        "100401", x_user_authorization="Bearer verified-token"
+    )
+
+    assert response == {
+        "ok": True,
+        "apm_id": "100401",
+        "subject": "google-subject-789",
+    }
+
+
+def test_journey_portfolio_is_scoped_to_verified_users_groups(monkeypatch) -> None:
+    visible = SimpleNamespace(id="J-VISIBLE", access_group_id="GROUP_1")
+    hidden = SimpleNamespace(id="J-HIDDEN", access_group_id="GROUP_2")
+
+    class FakeStateMachine:
+        def get_access_groups_for_user(self, subject: str):
+            assert subject == "google-subject-789"
+            return frozenset({"GROUP_1"})
+
+        def list_apm_ids_for_groups(self, groups):
+            assert groups == frozenset({"GROUP_1"})
+            return ["100401", "100402"]
+
+        def find_journey_by_apm_id(self, apm_id: str):
+            return visible if apm_id == "100401" else hidden
+
+    class FakeService:
+        state_machine = FakeStateMachine()
+
+        def status(self, journey_id: str):
+            assert journey_id == "J-VISIBLE"
+            return {"journey_id": journey_id, "apm_id": "100401"}
+
+    monkeypatch.setattr(main, "OAUTH_CLIENT_ID", "oauth-client")
+    monkeypatch.setattr(main, "get_service", lambda: FakeService())
+    monkeypatch.setattr(
+        main.id_token,
+        "verify_oauth2_token",
+        lambda *_args, **_kwargs: {
+            "aud": "oauth-client",
+            "sub": "google-subject-789",
+            "email_verified": True,
+            "email": "journey-owner@example.com",
+        },
+    )
+
+    response = main.journey_portfolio(
+        x_user_authorization="Bearer verified-token"
+    )
+
+    assert response == {"journeys": [{"journey_id": "J-VISIBLE", "apm_id": "100401"}]}

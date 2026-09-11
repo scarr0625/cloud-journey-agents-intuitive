@@ -33,6 +33,8 @@ from .cloud_journey.capability import (
     DURABLE_JOURNEY_TOOLS,
 )
 from .cloud_journey.identity import verified_identity_state
+from .cloud_journey.state_machine import JourneyError
+from .cloud_journey.tools import ApmAccessDenied, get_service
 
 APP_NAME = "orchestrator"
 MODEL = os.environ.get("ORCHESTRATOR_MODEL", "gemini-3.6-flash")
@@ -285,64 +287,500 @@ PLAYGROUND_HTML = """<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cloud Journey Orchestrator</title>
   <style>
-    :root { color-scheme: light; font-family: Georgia, serif; background: #f3f0e9; color: #17312b; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; }
-    main { width: min(900px, 92vw); padding: 36px; box-sizing: border-box; }
-    h1 { font-size: clamp(2rem, 5vw, 4.5rem); line-height: .95; max-width: 680px; margin: 0 0 14px; }
-    p { font-family: system-ui, sans-serif; color: #53645e; }
-    textarea { width: 100%; min-height: 120px; box-sizing: border-box; border: 1px solid #aab9ae; background: #fffdf8; padding: 16px; font: 1rem system-ui, sans-serif; }
-    button { margin-top: 12px; border: 0; background: #17312b; color: #fffdf8; padding: 10px 18px; cursor: pointer; font: 600 .9rem system-ui, sans-serif; }
-    button:disabled { opacity: .55; cursor: wait; }
-    .examples { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 8px; }
-    .examples button { margin: 0; background: transparent; border: 1px solid #aab9ae; color: #17312b; padding: 7px 12px; font: 500 .8rem system-ui, sans-serif; }
-    .examples button:hover { border-color: #17312b; }
-    .examples .tag { font-weight: 700; color: #65766f; margin-right: 6px; }
-    .who { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; min-height: 40px; }
-    .who .signed { font: .85rem system-ui, sans-serif; color: #17312b; background: #e7ece7; border: 1px solid #aab9ae; padding: 7px 12px; }
-    .who button.signout { margin: 0; background: transparent; border: 1px solid #aab9ae; color: #65766f; padding: 6px 11px; font: 500 .78rem system-ui, sans-serif; }
-    .gate { opacity: .4; pointer-events: none; }
-    pre { white-space: pre-wrap; background: #17312b; color: #f5f1e8; padding: 20px; margin-top: 26px; min-height: 90px; font: .95rem/1.5 ui-monospace, monospace; }
-    .status { font: .8rem system-ui, sans-serif; color: #65766f; }
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #020f17;
+      color: #edf6ff;
+      --canvas: #020f17;
+      --panel: #0c1829;
+      --panel-2: #111f32;
+      --line: #28465e;
+      --muted: #8ca4bd;
+      --blue: #3b9be3;
+      --blue-2: #183b5d;
+      --amber: #f4b315;
+      --green: #30c49d;
+      --red: #f26d6d;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 50% -20%, #07344b 0, var(--canvas) 42%); }
+    button, input, textarea { font: inherit; }
+    button { border: 0; cursor: pointer; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    a { color: #8cc8f4; }
+    .shell { min-height: 100vh; }
+    .topbar { height: 68px; padding: 0 max(22px, calc((100vw - 1190px) / 2)); display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #183248; background: rgba(2, 15, 23, .88); backdrop-filter: blur(14px); position: sticky; top: 0; z-index: 20; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 750; letter-spacing: -.01em; }
+    .cloud-mark { width: 34px; height: 34px; display: grid; place-items: center; color: #78c7ff; border: 1px solid #245576; border-radius: 10px; background: linear-gradient(145deg, #0e3955, #092037); }
+    .cloud-mark.large { width: 66px; height: 66px; border-radius: 18px; font-size: 30px; margin: 0 auto 22px; }
+    .who { display: flex; align-items: center; gap: 10px; min-height: 40px; }
+    .who .signed { color: #c9d9e8; font-size: .8rem; padding: 7px 11px; border: 1px solid var(--line); border-radius: 18px; background: #0c1c2b; }
+    .signout, .ghost, .secondary { color: #dcecff; background: transparent; border: 1px solid #3a5871; border-radius: 8px; padding: 9px 13px; font-weight: 650; }
+    .primary { color: white; background: linear-gradient(180deg, #3b9be3, #2479b9); border: 1px solid #55adf0; border-radius: 8px; padding: 10px 15px; font-weight: 700; box-shadow: 0 8px 24px rgba(27, 123, 190, .18); }
+    .page { width: min(1190px, calc(100vw - 40px)); margin: 0 auto; padding: 38px 0 70px; }
+    .eyebrow { margin: 0 0 10px; color: #7f99b3; font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: clamp(1.55rem, 3vw, 2.1rem); letter-spacing: -.025em; }
+    h2 { font-size: 1.1rem; }
+    p { color: #a9bdd1; line-height: 1.55; }
+    .hidden { display: none !important; }
+    .auth-view { min-height: calc(100vh - 150px); display: grid; place-items: center; text-align: center; }
+    .auth-card { width: min(660px, 100%); }
+    .auth-card h1 { font-size: clamp(2rem, 5vw, 3.1rem); }
+    .auth-card p { max-width: 560px; margin: 0 auto 25px; }
+    .auth-status { color: #91a9c0; font-size: .86rem; min-height: 22px; margin: 16px 0; }
+    .mock-composer { width: min(820px, 100%); min-height: 112px; margin-top: 54px; border: 1px solid var(--line); border-radius: 15px; background: var(--panel); opacity: .42; padding: 18px; text-align: left; color: var(--muted); }
+    .workspace-head { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 24px; }
+    .workspace-head p { margin: 0; }
+    .tabbar { display: flex; gap: 5px; margin-bottom: 28px; border-bottom: 1px solid #163146; }
+    .tab { padding: 12px 14px; background: transparent; color: var(--muted); border-bottom: 2px solid transparent; font-weight: 700; }
+    .tab.active { color: white; border-bottom-color: var(--blue); }
+    .panel { background: rgba(12, 24, 41, .96); border: 1px solid var(--line); border-radius: 14px; }
+    .empty { text-align: center; padding-top: 16px; }
+    .empty > p { max-width: 720px; margin: 0 auto 20px; }
+    .steps-card { max-width: 900px; margin: 56px auto 20px; padding: 22px; text-align: left; }
+    .stepper { display: grid; grid-template-columns: repeat(5, 1fr); margin-top: 24px; }
+    .step { position: relative; text-align: center; min-width: 0; }
+    .step:not(:last-child)::after { content: ""; position: absolute; height: 2px; left: calc(50% + 17px); right: calc(-50% + 17px); top: 16px; background: #385974; }
+    .step.done:not(:last-child)::after { background: var(--blue); }
+    .step-dot { width: 32px; height: 32px; margin: 0 auto 10px; display: grid; place-items: center; border: 2px solid #41627c; border-radius: 50%; background: #102034; color: #91a8bf; font-size: .8rem; font-weight: 800; position: relative; z-index: 1; }
+    .step.current .step-dot { border-color: var(--amber); color: #ffe082; box-shadow: 0 0 0 4px rgba(244, 179, 21, .13); }
+    .step.done .step-dot { border-color: var(--blue); background: #287fb9; color: white; }
+    .step strong { display: block; font-size: .77rem; color: #e7f1fb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .step small { color: #7892ab; font-size: .7rem; }
+    .checklist { max-width: 900px; margin: 18px auto 0; padding: 20px; text-align: left; }
+    .check-row { display: flex; gap: 14px; padding: 15px; margin-top: 10px; border: 1px solid #2d4b63; background: #142b47; border-radius: 10px; }
+    .number { width: 27px; height: 27px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; background: #2d8ac7; font-weight: 800; font-size: .8rem; }
+    .check-row strong { font-size: .84rem; }
+    .check-row small { display: block; color: #8fa9c4; margin-top: 3px; }
+    .progress-card { padding: 18px 16px 16px; margin-bottom: 20px; }
+    .progress-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    .notice { display: flex; align-items: center; gap: 15px; border-left: 4px solid var(--amber); padding: 16px; margin: 18px 0; background: #101d1d; }
+    .notice-icon { width: 38px; height: 38px; display: grid; place-items: center; color: var(--amber); background: #3b3209; border-radius: 9px; }
+    .notice strong, .notice small { display: block; }
+    .notice small { color: var(--muted); margin-top: 3px; }
+    .table-wrap { overflow: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+    th { color: #8098b1; text-align: left; font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; }
+    th, td { padding: 13px 12px; border-bottom: 1px solid #29455b; }
+    tr:last-child td { border-bottom: 0; }
+    .status-pill { display: inline-flex; padding: 5px 9px; border-radius: 14px; color: #8ecbfa; background: #102d47; font-size: .7rem; }
+    .status-pill.amber { color: #ffc94f; background: #3a3214; }
+    .status-pill.green { color: #42d4ac; background: #0c3935; }
+    .status-pill.red { color: #ff8a8a; background: #3a2531; }
+    .detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; }
+    .phase-list { padding: 16px; }
+    .phase-item { position: relative; padding: 15px 0 18px 40px; border-bottom: 1px solid #29455b; }
+    .phase-item:last-child { border-bottom: 0; }
+    .phase-bullet { position: absolute; left: 0; top: 13px; width: 27px; height: 27px; display: grid; place-items: center; border: 2px solid #456882; border-radius: 50%; color: #8da7bf; font-size: .72rem; font-weight: 800; }
+    .phase-item.done .phase-bullet { background: #2c87c3; color: white; border-color: #2c87c3; }
+    .phase-item.current .phase-bullet { color: #ffd15b; border-color: var(--amber); }
+    .phase-item h3 { margin: 0 0 6px; font-size: .88rem; }
+    .phase-item p { margin: 0; font-size: .79rem; }
+    .phase-state { position: absolute; right: 0; top: 13px; }
+    .subtasks { margin-top: 15px; padding: 14px; background: #132136; border: 1px solid #2c4a62; border-radius: 10px; }
+    .subtask { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid #2d465b; font-size: .78rem; }
+    .subtask:last-child { border-bottom: 0; }
+    .side-stack { display: grid; gap: 18px; align-content: start; }
+    .side-card { padding: 16px; }
+    .compass-callout { border-left: 3px solid var(--blue); background: #14253a; padding: 13px; border-radius: 9px; color: #e5f2ff; font-size: .8rem; line-height: 1.5; }
+    .timeline-item { padding: 11px 0; border-bottom: 1px solid #29455b; }
+    .timeline-item:last-child { border-bottom: 0; }
+    .timeline-item strong, .timeline-item small { display: block; font-size: .76rem; }
+    .timeline-item small { color: var(--muted); margin-top: 4px; }
+    dialog { width: min(470px, calc(100vw - 30px)); padding: 0; color: inherit; background: var(--panel); border: 1px solid #36566f; border-radius: 14px; box-shadow: 0 30px 100px #000; }
+    dialog::backdrop { background: rgba(0, 8, 14, .78); backdrop-filter: blur(3px); }
+    .dialog-body { padding: 24px; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; }
+    input { width: 100%; color: white; background: #071521; border: 1px solid #36566f; border-radius: 8px; padding: 12px; outline: none; }
+    input:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(59, 155, 227, .13); }
+    label { display: block; color: #b9cadb; font-size: .8rem; font-weight: 700; margin-bottom: 8px; }
+    .compass-panel { position: fixed; right: 18px; bottom: 18px; width: min(470px, calc(100vw - 36px)); height: min(680px, calc(100vh - 96px)); display: grid; grid-template-rows: auto 1fr auto; background: #071725; border: 1px solid #31526a; border-radius: 18px; box-shadow: 0 30px 90px rgba(0,0,0,.55); z-index: 40; overflow: hidden; transform: translateY(16px); opacity: 0; pointer-events: none; transition: .2s ease; }
+    .compass-panel.open { transform: none; opacity: 1; pointer-events: auto; }
+    .chat-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid #244158; }
+    .chat-head button { background: transparent; color: #9fb4c7; font-size: 1.2rem; }
+    .messages { overflow: auto; padding: 18px; }
+    .message { max-width: 90%; margin-bottom: 14px; padding: 11px 13px; border-radius: 12px; white-space: pre-wrap; font-size: .82rem; line-height: 1.5; }
+    .message.agent { background: #13283d; border-left: 3px solid var(--blue); }
+    .message.user { margin-left: auto; background: #1d5681; }
+    .interaction { border: 0; margin: 0; padding: 12px; min-width: 0; border-top: 1px solid #244158; }
+    .interaction:disabled { opacity: .42; }
+    .composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    textarea { width: 100%; min-height: 58px; max-height: 140px; resize: vertical; color: white; background: #0c1b2d; border: 1px solid #36566f; border-radius: 10px; padding: 11px; outline: none; }
+    .send { width: 44px; height: 44px; align-self: end; border-radius: 50%; color: white; background: #2f94d5; font-size: 1rem; }
+    .quick-actions { display: flex; gap: 6px; overflow-x: auto; padding-top: 8px; }
+    .quick-actions button { flex: 0 0 auto; color: #a9c1d8; background: transparent; border: 1px solid #294b64; border-radius: 15px; padding: 5px 9px; font-size: .68rem; }
+    .fab { position: fixed; right: 24px; bottom: 24px; z-index: 30; width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(180deg, #42a9ed, #2479ba); color: white; box-shadow: 0 14px 35px #000; font-size: 22px; }
+    .loading { display: inline-block; width: 13px; height: 13px; border: 2px solid #51718b; border-top-color: white; border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (max-width: 780px) {
+      .page { width: min(100% - 24px, 1190px); padding-top: 24px; }
+      .detail-layout { grid-template-columns: 1fr; }
+      .step strong { font-size: .64rem; }
+      .step small { display: none; }
+      .workspace-head { display: block; }
+      .workspace-head .primary { margin-top: 15px; }
+      th:nth-child(4), td:nth-child(4) { display: none; }
+    }
   </style>
 </head>
 <body>
-  <main>
-    <div class="status">SCHWAB CLOUD JOURNEY ORCHESTRATOR</div>
-    <div class="who" id="who"></div>
-    <h1>Ask about the estate.</h1>
-    <p>The Orchestrator owns the durable Journey lifecycle and consults the <strong>Asset Inventory Agent</strong> and <strong>APM Agent</strong> for specialist facts.</p>
-    <textarea id="query">Start a durable Cloud Journey for APM 100401.</textarea>
-    <button id="send">Run query</button>
-    <div class="examples">
-      <button data-q="Start a durable Cloud Journey for APM 100401."><span class="tag">JOURNEY</span>start</button>
-      <button data-q="Show the durable status and history for APM 100401."><span class="tag">JOURNEY</span>status</button>
-      <button data-q="Who owns APM001234, and what incidents does it have?"><span class="tag">APM</span>owner + incidents</button>
-      <button data-q="List every tier-1 application and its support group."><span class="tag">APM</span>tier-1 portfolio</button>
-      <button data-q="Which applications does the Client Portal Gateway depend on?"><span class="tag">APM</span>dependencies</button>
-      <button data-q="List all Cloud Run services in projects/schwab-agent-poc."><span class="tag">INFRA</span>Cloud Run services</button>
-      <button data-q="What storage buckets exist in this project?"><span class="tag">INFRA</span>buckets</button>
-      <button data-q="Which cloud resources back APM001234?"><span class="tag">BOTH</span>cross-domain</button>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="cloud-mark" aria-hidden="true">☁</span> Cloud Compass</div>
+      <div class="who" id="who"></div>
+    </header>
+    <main class="page">
+      <section class="auth-view" id="auth-view">
+        <div class="auth-card">
+          <div class="cloud-mark large" aria-hidden="true">☁</div>
+          <h1>Hi, I'm Cloud Compass</h1>
+          <p>Your guided path from application discovery through governance, deployment, go-live, and Day-2 operations.</p>
+          <div class="auth-status" id="auth-status" role="status">Sign in with Google to begin.</div>
+          <div class="mock-composer">Ask me anything…</div>
+        </div>
+      </section>
+      <section id="workspace" class="hidden">
+        <nav class="tabbar" aria-label="Workspace">
+          <button class="tab active" data-view="portfolio">Portfolio</button>
+          <button class="tab" data-view="journey">Journey detail</button>
+        </nav>
+        <div id="screen"></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="link-dialog">
+    <form class="dialog-body" id="link-form">
+      <p class="eyebrow">Start a Cloud Journey</p>
+      <h2>Link an existing APM ID</h2>
+      <p>Cloud Compass will verify your group access, recover an existing Journey, or start a new durable Journey.</p>
+      <label for="apm-input">APM ID</label>
+      <input id="apm-input" name="apm_id" placeholder="e.g. 100401" maxlength="64" required autocomplete="off">
+      <div class="dialog-actions">
+        <button type="button" class="secondary" id="cancel-link">Cancel</button>
+        <button type="submit" class="primary" id="link-submit">Link APM ID →</button>
+      </div>
+    </form>
+  </dialog>
+
+  <button class="fab hidden" id="compass-fab" aria-label="Open Cloud Compass">☁</button>
+  <aside class="compass-panel" id="compass-panel" aria-label="Cloud Compass agent">
+    <div class="chat-head">
+      <strong>☁ &nbsp;Cloud Compass</strong>
+      <button id="close-chat" aria-label="Close agent">×</button>
     </div>
-    <pre id="result">Ready.</pre>
-  </main>
+    <div class="messages" id="messages" aria-live="polite"></div>
+    <fieldset class="interaction" id="interaction" disabled>
+      <div class="composer">
+        <textarea id="query" placeholder="Ask about your Cloud Journey…"></textarea>
+        <button class="send" id="send" aria-label="Send query">➤</button>
+      </div>
+      <div class="quick-actions">
+        <button type="button" data-q="Show the current durable Journey status and history.">Journey status</button>
+        <button type="button" data-q="What information do you need from me next for this Journey?">What's next?</button>
+        <button type="button" data-q="Explain the current governance and approval status.">Explain governance</button>
+        <button type="button" data-q="Which cloud resources back this application?">Cloud resources</button>
+      </div>
+    </fieldset>
+  </aside>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script>
     const CLIENT_ID = __CLIENT_ID_JSON__;
+    const PHASES = [
+      {name: 'Journey Start', detail: 'Discovery'},
+      {name: 'Governance', detail: 'SAD · SDR · ARB'},
+      {name: 'Deployment', detail: 'App Factory'},
+      {name: 'CELT, Go Live', detail: 'Validation'},
+      {name: 'BAU', detail: 'Day-2 ops'}
+    ];
+    const STATE_PHASE = {
+      CREATED: 0, VALIDATING_APM: 0, APM_VALIDATED: 0,
+      DISCOVERING_CLOUD_SERVICES: 0, COLLECTING_ASSET_INVENTORY: 0,
+      ASSET_INVENTORY_COMPLETE: 0, GENERATING_PLAN: 1,
+      WAITING_FOR_APPROVAL: 1, APPROVED: 1, REJECTED: 1,
+      PROVISIONING_AGENT_IDENTITY: 2, AGENT_IDENTITY_READY: 2,
+      PREPARING_APP_FACTORY: 2, APP_FACTORY_READY: 2,
+      SUBMITTING_CLOUD_BUILD: 2, CLOUD_BUILD_RUNNING: 2,
+      VALIDATING_DEPLOYMENT: 3, COMPLETED: 4
+    };
     const who = document.getElementById('who');
+    const authStatus = document.getElementById('auth-status');
+    const authView = document.getElementById('auth-view');
+    const workspace = document.getElementById('workspace');
+    const screen = document.getElementById('screen');
+    const interaction = document.getElementById('interaction');
     const queryInput = document.getElementById('query');
     const send = document.getElementById('send');
-    const result = document.getElementById('result');
+    const messagesEl = document.getElementById('messages');
+    const compassPanel = document.getElementById('compass-panel');
+    const compassFab = document.getElementById('compass-fab');
+    const linkDialog = document.getElementById('link-dialog');
+    const linkForm = document.getElementById('link-form');
+    const apmInput = document.getElementById('apm-input');
+    const linkSubmit = document.getElementById('link-submit');
     let userIdToken = null;
+    let userProfile = null;
     let sessionId = sessionStorage.getItem('orchestratorSessionId');
+    let knownApms = [];
+    let activeApm = null;
+    let currentView = 'portfolio';
+    let messages = [{role: 'agent', text: 'Hi, I’m Cloud Compass. Link an APM ID or ask me about your application estate.'}];
+    const journeys = new Map();
+
+    const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[char]);
+    const prettyState = value => String(value || 'Not started')
+      .toLowerCase().replaceAll('_', ' ').replace(/\b\w/g, char => char.toUpperCase());
+    const displayApm = value => /^\d+$/.test(value) ? `APM${value}` : value;
+    const appName = journey => journey?.context?.inventory?.application_name || `Application ${displayApm(journey?.apm_id || '')}`;
+    const storageKey = () => `cloudCompassApms:${userProfile?.sub || 'unknown'}`;
 
     function gate(enabled) {
-      send.disabled = !enabled;
-      document.querySelector('.examples').classList.toggle('gate', !enabled);
-      queryInput.disabled = !enabled;
+      interaction.disabled = !enabled;
+      compassFab.classList.toggle('hidden', !enabled);
+    }
+
+    function phaseIndex(journey) {
+      if (!journey) return 0;
+      if (journey.current_state === 'FAILED' || journey.current_state === 'RETRYING') {
+        const path = journey.state_path || [];
+        for (let index = path.length - 1; index >= 0; index--) {
+          if (STATE_PHASE[path[index]] !== undefined) return STATE_PHASE[path[index]];
+        }
+      }
+      return STATE_PHASE[journey.current_state] ?? 0;
+    }
+
+    function pillClass(state) {
+      if (state === 'COMPLETED') return 'green';
+      if (state === 'FAILED' || state === 'REJECTED') return 'red';
+      if (state === 'WAITING_FOR_APPROVAL' || state === 'GENERATING_PLAN') return 'amber';
+      return '';
+    }
+
+    function stepperMarkup(journey) {
+      const current = phaseIndex(journey);
+      const complete = journey?.current_state === 'COMPLETED';
+      return `<div class="stepper">${PHASES.map((phase, index) => {
+        const done = index < current || complete;
+        const here = index === current && !complete;
+        return `<div class="step ${done ? 'done' : ''} ${here ? 'current' : ''}">
+          <div class="step-dot">${done ? '✓' : index + 1}</div>
+          <strong>${escapeHtml(phase.name)}</strong><small>${escapeHtml(done ? 'Complete' : here ? prettyState(journey?.current_state) : phase.detail)}</small>
+        </div>`;
+      }).join('')}</div>`;
+    }
+
+    function renderEmpty() {
+      screen.innerHTML = `<section class="empty">
+        <div class="cloud-mark large" aria-hidden="true">☁</div>
+        <h1>Welcome to your Cloud Journey</h1>
+        <p>You don’t have any applications linked yet. Link an existing APM ID to take it from evaluation through governance and provisioning to Day-2 operations.</p>
+        <button class="primary" data-action="link">Link an existing APM ID</button>
+        <div class="steps-card panel"><p class="eyebrow">What happens next</p>${stepperMarkup(null)}</div>
+        <div class="checklist panel">
+          <p class="eyebrow">Before you start — have these ready</p>
+          <div class="check-row"><span class="number">1</span><div><strong>Cost center & sponsoring office</strong><small>Needed for triage and the Cloud Front Door request</small></div></div>
+          <div class="check-row"><span class="number">2</span><div><strong>An APM ID (or register a new product in APM)</strong><small>The system of record for the technology you’re onboarding</small></div></div>
+          <div class="check-row"><span class="number">3</span><div><strong>Technology Fitness Assessment</strong><small>Input to the SAD and governance review</small></div></div>
+        </div>
+      </section>`;
+    }
+
+    function renderPortfolio() {
+      const available = knownApms.map(apm => journeys.get(apm)).filter(Boolean);
+      const focus = journeys.get(activeApm) || available[0];
+      const blocked = focus && ['WAITING_FOR_APPROVAL', 'FAILED', 'REJECTED'].includes(focus.current_state);
+      screen.innerHTML = `<div class="workspace-head"><div><h1>Portfolio Overview</h1><p>All applications you can access, and what needs your attention.</p></div><button class="primary" data-action="link">+ Start a new Cloud Journey</button></div>
+        ${focus ? `<section class="progress-card panel"><div class="progress-top"><p class="eyebrow">Journey progress — ${escapeHtml(displayApm(focus.apm_id))}</p><button class="secondary" data-action="open" data-apm="${escapeHtml(focus.apm_id)}">View full journey →</button></div>${stepperMarkup(focus)}</section>` : ''}
+        ${blocked ? `<section class="notice panel"><span class="notice-icon">△</span><div><strong>${focus.current_state === 'WAITING_FOR_APPROVAL' ? 'Governance review is waiting for an external decision' : `Journey needs attention — ${prettyState(focus.current_state)}`}</strong><small>Cloud Compass can explain the durable status and recommended next action.</small></div><button class="secondary" data-action="ask-status">Ask Compass →</button></section>` : ''}
+        <div class="progress-top"><p class="eyebrow">My applications</p></div>
+        <div class="panel table-wrap"><table><thead><tr><th>APM ID</th><th>Application</th><th>Current phase</th><th>Durable state</th><th></th></tr></thead><tbody>
+        ${knownApms.map(apm => {
+          const journey = journeys.get(apm);
+          if (!journey) return `<tr><td>${escapeHtml(displayApm(apm))}</td><td>Loading…</td><td>—</td><td><span class="loading"></span></td><td></td></tr>`;
+          return `<tr><td>${escapeHtml(displayApm(apm))}</td><td>${escapeHtml(appName(journey))}</td><td><span class="status-pill ${pillClass(journey.current_state)}">${escapeHtml(PHASES[phaseIndex(journey)].name)}</span></td><td>${escapeHtml(prettyState(journey.current_state))}</td><td><button class="secondary" data-action="open" data-apm="${escapeHtml(apm)}">Open →</button></td></tr>`;
+        }).join('')}</tbody></table></div>`;
+    }
+
+    function phaseDescription(index, journey) {
+      const inventory = journey?.context?.inventory;
+      return [
+        inventory ? `Application discovery captured for ${inventory.application_name}.` : 'Validate the APM record and capture application discovery facts.',
+        journey?.current_state === 'WAITING_FOR_APPROVAL' ? 'The proposed plan is at the independent human approval boundary.' : 'Architecture, security, and local governance review.',
+        'Provision agent identity, prepare App Factory, and run the simulated build.',
+        'Validate deployment readiness and coordinate controlled go-live.',
+        'Transition to supported Day-2 operations.'
+      ][index];
+    }
+
+    function timelineMarkup(journey) {
+      const history = (journey?.history || []).slice(-5).reverse();
+      if (!history.length) return '<p>No durable events yet.</p>';
+      return history.map(event => `<div class="timeline-item"><strong>${escapeHtml(event.message || prettyState(event.event_type))}</strong><small>${escapeHtml(event.actor_type)} · ${new Date(event.created_at).toLocaleString()}</small></div>`).join('');
+    }
+
+    function renderDetail() {
+      const journey = journeys.get(activeApm);
+      if (!journey) { renderPortfolio(); return; }
+      const current = phaseIndex(journey);
+      const phaseItems = PHASES.map((phase, index) => {
+        const done = index < current || journey.current_state === 'COMPLETED';
+        const here = index === current && journey.current_state !== 'COMPLETED';
+        const governance = index === 1 && here ? `<div class="subtasks">
+          <div class="subtask"><span>Design / SAD</span><span class="status-pill green">Captured</span></div>
+          <div class="subtask"><span>Security / SDR</span><span class="status-pill ${journey.current_state === 'WAITING_FOR_APPROVAL' ? 'green' : ''}">${journey.current_state === 'WAITING_FOR_APPROVAL' ? 'Ready' : 'Upcoming'}</span></div>
+          <div class="subtask"><span>Architecture Review Board</span><span class="status-pill amber">${journey.current_state === 'WAITING_FOR_APPROVAL' ? 'In review' : 'Upcoming'}</span></div>
+        </div>` : '';
+        return `<div class="phase-item ${done ? 'done' : ''} ${here ? 'current' : ''}"><span class="phase-bullet">${done ? '✓' : index + 1}</span><h3>${index + 1} · ${escapeHtml(phase.name)}</h3><p>${escapeHtml(phaseDescription(index, journey))}</p><span class="phase-state status-pill ${here ? pillClass(journey.current_state) : ''}">${done ? 'Complete' : here ? escapeHtml(prettyState(journey.current_state)) : 'Upcoming'}</span>${governance}</div>`;
+      }).join('');
+      screen.innerHTML = `<div class="workspace-head"><div><h1>${escapeHtml(displayApm(journey.apm_id))} — ${escapeHtml(appName(journey))}</h1><p>Owner: ${escapeHtml(journey.requested_by_email)} · Group: ${escapeHtml(journey.access_group_id)} · <span class="status-pill ${pillClass(journey.current_state)}">${escapeHtml(prettyState(journey.current_state))}</span></p></div><button class="primary" data-action="continue">Continue with Compass →</button></div>
+        <div class="detail-layout"><section class="phase-list panel"><p class="eyebrow">Journey phases</p>${phaseItems}</section>
+        <aside class="side-stack"><section class="side-card panel"><div class="progress-top"><h2>☁ Cloud Compass</h2><span class="status-pill">Context-aware</span></div><div class="compass-callout">${journey.current_state === 'WAITING_FOR_APPROVAL' ? 'Your plan is waiting for independent approval. I can explain the governance boundary or check whether a decision has been recorded.' : `Your Journey is in ${prettyState(journey.current_state)}. I can gather missing details, explain blockers, and guide the next durable action.`}</div><button class="primary" data-action="continue">Ask Compass</button></section>
+        <section class="side-card panel"><p class="eyebrow">Linked work</p><div class="timeline-item"><strong>${journey.current_state === 'WAITING_FOR_APPROVAL' ? 'Governance approval' : 'Cloud Journey workflow'}</strong><small>${escapeHtml(journey.journey_id)} · ${escapeHtml(prettyState(journey.current_state))}</small></div></section>
+        <section class="side-card panel"><p class="eyebrow">Timeline</p>${timelineMarkup(journey)}</section></aside></div>`;
+    }
+
+    function renderScreen() {
+      document.querySelectorAll('.tab').forEach(tab => tab.classList.toggle('active', tab.dataset.view === currentView));
+      if (!knownApms.length) return renderEmpty();
+      if (currentView === 'journey') return renderDetail();
+      renderPortfolio();
+    }
+
+    function renderMessages() {
+      messagesEl.innerHTML = messages.map(message => `<div class="message ${message.role}">${escapeHtml(message.text)}</div>`).join('');
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function openChat(prefill = '') {
+      compassPanel.classList.add('open');
+      compassFab.classList.add('hidden');
+      if (prefill) queryInput.value = prefill;
+      renderMessages();
+      queryInput.focus();
+    }
+
+    function closeChat() {
+      compassPanel.classList.remove('open');
+      if (userIdToken) compassFab.classList.remove('hidden');
+    }
+
+    async function fetchJourney(apm) {
+      const response = await fetch(`/v1/journeys/by-apm/${encodeURIComponent(apm)}`, {
+        headers: {'X-User-Authorization': 'Bearer ' + userIdToken}
+      });
+      if (response.status === 404) return null;
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+      return data;
+    }
+
+    async function refreshJourneys() {
+      try {
+        const response = await fetch('/v1/journeys', {
+          headers: {'X-User-Authorization': 'Bearer ' + userIdToken}
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+        for (const journey of data.journeys) {
+          journeys.set(journey.apm_id, journey);
+          if (!knownApms.includes(journey.apm_id)) knownApms.push(journey.apm_id);
+        }
+        if (!activeApm && knownApms.length) activeApm = knownApms[0];
+        localStorage.setItem(storageKey(), JSON.stringify(knownApms));
+      } catch (error) {
+        messages.push({role: 'agent', text: `Could not load your Journey portfolio: ${error.message}`});
+      }
+      await Promise.all(knownApms.map(async apm => {
+        try {
+          const journey = await fetchJourney(apm);
+          if (journey) journeys.set(apm, journey);
+        } catch (error) {
+          messages.push({role: 'agent', text: `Could not refresh ${displayApm(apm)}: ${error.message}`});
+        }
+      }));
+      renderScreen();
+    }
+
+    async function runAgent(question) {
+      const headers = {'Content-Type': 'application/json', 'X-User-Authorization': 'Bearer ' + userIdToken};
+      const contextualQuestion = activeApm && !question.includes(activeApm) ? `${question}\n\nContext: APM ID ${activeApm}.` : question;
+      const requestBody = {query: contextualQuestion};
+      if (sessionId) requestBody.session_id = sessionId;
+      const response = await fetch('/v1/query', {method: 'POST', headers, body: JSON.stringify(requestBody)});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+      sessionId = data.session_id;
+      sessionStorage.setItem('orchestratorSessionId', sessionId);
+      return data.answer;
+    }
+
+    async function sendQuery(question = queryInput.value.trim()) {
+      if (!userIdToken || !question) return;
+      queryInput.value = '';
+      messages.push({role: 'user', text: question}, {role: 'agent', text: 'Working…'});
+      openChat();
+      send.disabled = true;
+      try {
+        const answer = await runAgent(question);
+        messages[messages.length - 1] = {role: 'agent', text: answer};
+        if (activeApm) {
+          const journey = await fetchJourney(activeApm);
+          if (journey) journeys.set(activeApm, journey);
+        }
+        renderScreen();
+      } catch (error) {
+        messages[messages.length - 1] = {role: 'agent', text: `Request failed: ${error.message}`};
+      } finally {
+        send.disabled = false;
+        renderMessages();
+      }
+    }
+
+    async function linkApm(apm) {
+      const normalized = apm.trim().replace(/^APM[- ]?/i, '');
+      if (!normalized) return;
+      linkSubmit.disabled = true;
+      linkSubmit.innerHTML = '<span class="loading"></span> Linking';
+      activeApm = normalized;
+      try {
+        let journey = await fetchJourney(normalized);
+        if (!journey) {
+          linkDialog.close();
+          messages.push({role: 'agent', text: `I couldn’t find an existing Journey for ${displayApm(normalized)}. I’ll verify access and start one now.`});
+          openChat();
+          renderMessages();
+          const answer = await runAgent(`Start a durable Cloud Journey for APM ${normalized}. Return its Journey ID and current durable state.`);
+          messages.push({role: 'agent', text: answer});
+          journey = await fetchJourney(normalized);
+        }
+        if (!journey) throw new Error('The Journey was not created. Ask Cloud Compass for details.');
+        journeys.set(normalized, journey);
+        if (!knownApms.includes(normalized)) knownApms.push(normalized);
+        localStorage.setItem(storageKey(), JSON.stringify(knownApms));
+        currentView = 'journey';
+        linkDialog.close();
+        renderScreen();
+        renderMessages();
+      } catch (error) {
+        linkDialog.close();
+        messages.push({role: 'agent', text: `Could not link ${displayApm(normalized)}: ${error.message}`});
+        openChat();
+      } finally {
+        linkSubmit.disabled = false;
+        linkSubmit.textContent = 'Link APM ID →';
+      }
     }
 
     function signedIn(token, profile) {
       userIdToken = token;
+      userProfile = profile;
+      try { knownApms = JSON.parse(localStorage.getItem(storageKey()) || '[]'); } catch { knownApms = []; }
+      activeApm = knownApms[0] || null;
       who.innerHTML = '';
       const tag = document.createElement('span');
       tag.className = 'signed';
@@ -354,19 +792,29 @@ PLAYGROUND_HTML = """<!doctype html>
       signOut.addEventListener('click', () => {
         google.accounts.id.disableAutoSelect();
         userIdToken = null;
+        userProfile = null;
         sessionId = null;
+        knownApms = [];
+        journeys.clear();
         sessionStorage.removeItem('orchestratorSessionId');
+        workspace.classList.add('hidden');
+        authView.classList.remove('hidden');
+        closeChat();
         renderSignIn();
       });
       who.append(tag, signOut);
+      authView.classList.add('hidden');
+      workspace.classList.remove('hidden');
       gate(true);
+      renderScreen();
+      refreshJourneys();
     }
 
     function decodeClaims(credential) {
       const encoded = credential.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
       const padded = encoded.padEnd(Math.ceil(encoded.length / 4) * 4, '=');
-      return JSON.parse(decodeURIComponent(Array.from(atob(padded), c =>
-        '%' + c.charCodeAt(0).toString(16).padStart(2, '0')).join('')));
+      return JSON.parse(decodeURIComponent(Array.from(atob(padded), char =>
+        '%' + char.charCodeAt(0).toString(16).padStart(2, '0')).join('')));
     }
 
     function renderSignIn() {
@@ -374,59 +822,48 @@ PLAYGROUND_HTML = """<!doctype html>
       const slot = document.createElement('div');
       who.append(slot);
       gate(false);
-      google.accounts.id.initialize({
-        client_id: CLIENT_ID,
-        callback: response => signedIn(response.credential, decodeClaims(response.credential))
-      });
-      google.accounts.id.renderButton(slot, {theme: 'outline', size: 'large', text: 'signin_with'});
+      authStatus.textContent = 'Sign in with Google to begin.';
+      google.accounts.id.initialize({client_id: CLIENT_ID, callback: response => signedIn(response.credential, decodeClaims(response.credential))});
+      google.accounts.id.renderButton(slot, {theme: 'filled_black', size: 'large', text: 'signin_with', shape: 'pill'});
       google.accounts.id.prompt();
     }
 
     window.addEventListener('load', () => {
       if (!CLIENT_ID) {
-        who.innerHTML = '<span class="signed">Sign-in is not configured; requests run as the service.</span>';
-        gate(true);
+        who.innerHTML = '<span class="signed">Google sign-in is not configured.</span>';
+        authStatus.textContent = 'Set OAUTH_CLIENT_ID to enable Google sign-in and Cloud Compass.';
         return;
       }
+      let attempts = 0;
       const ready = setInterval(() => {
-        if (window.google && google.accounts && google.accounts.id) {
+        if (window.google?.accounts?.id) { clearInterval(ready); renderSignIn(); }
+        else if (++attempts >= 100) {
           clearInterval(ready);
-          renderSignIn();
+          who.innerHTML = '<span class="signed">Google sign-in could not be loaded.</span>';
+          authStatus.textContent = 'Reload the page to try Google sign-in again.';
         }
       }, 100);
     });
 
-    document.querySelectorAll('.examples button').forEach(button => {
-      button.addEventListener('click', () => {
-        queryInput.value = button.dataset.q;
-        queryInput.focus();
-      });
+    screen.addEventListener('click', event => {
+      const button = event.target.closest('button[data-action]');
+      if (!button) return;
+      if (button.dataset.action === 'link') { apmInput.value = ''; linkDialog.showModal(); setTimeout(() => apmInput.focus(), 50); }
+      if (button.dataset.action === 'open') { activeApm = button.dataset.apm; currentView = 'journey'; renderScreen(); }
+      if (button.dataset.action === 'continue') openChat('What should I do next for this Cloud Journey?');
+      if (button.dataset.action === 'ask-status') openChat('Explain the current blocker and tell me what happens next.');
     });
-
-    send.addEventListener('click', async () => {
-      send.disabled = true;
-      result.textContent = 'Querying the Orchestrator...';
-      try {
-        const headers = {'Content-Type': 'application/json'};
-        if (userIdToken) headers['X-User-Authorization'] = 'Bearer ' + userIdToken;
-        const requestBody = {query: queryInput.value};
-        if (sessionId) requestBody.session_id = sessionId;
-        const response = await fetch('/v1/query', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(requestBody)
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-        sessionId = data.session_id;
-        sessionStorage.setItem('orchestratorSessionId', sessionId);
-        result.textContent = data.answer;
-      } catch (error) {
-        result.textContent = `Request failed: ${error.message}`;
-      } finally {
-        send.disabled = false;
-      }
+    document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => { currentView = tab.dataset.view; renderScreen(); }));
+    document.querySelectorAll('.quick-actions button').forEach(button => button.addEventListener('click', () => sendQuery(button.dataset.q)));
+    linkForm.addEventListener('submit', event => { event.preventDefault(); linkApm(apmInput.value); });
+    document.getElementById('cancel-link').addEventListener('click', () => linkDialog.close());
+    compassFab.addEventListener('click', () => openChat());
+    document.getElementById('close-chat').addEventListener('click', closeChat);
+    send.addEventListener('click', () => sendQuery());
+    queryInput.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendQuery(); }
     });
+    renderMessages();
   </script>
 </body>
 </html>
@@ -438,6 +875,58 @@ def playground() -> str:
     """Serve a small same-origin UI for exercising the orchestrator."""
 
     return PLAYGROUND_HTML.replace("__CLIENT_ID_JSON__", json.dumps(OAUTH_CLIENT_ID))
+
+
+@app.get("/v1/journeys")
+def journey_portfolio(
+    x_user_authorization: str | None = Header(default=None),
+) -> dict[str, list[dict[str, Any]]]:
+    """List durable Journeys visible to the signed-in user's access groups."""
+
+    if not OAUTH_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="Google sign-in is not configured.")
+
+    context_token = _user_token.set("")
+    try:
+        user = _verify_user(x_user_authorization)
+        service = get_service()
+        groups = service.state_machine.get_access_groups_for_user(user["subject"])
+        apm_ids = service.state_machine.list_apm_ids_for_groups(groups)
+        journeys: list[dict[str, Any]] = []
+        for apm_id in apm_ids:
+            journey = service.state_machine.find_journey_by_apm_id(apm_id)
+            if journey is not None and journey.access_group_id in groups:
+                journeys.append(service.status(journey.id))
+        return {"journeys": journeys}
+    finally:
+        _user_token.reset(context_token)
+
+
+@app.get("/v1/journeys/by-apm/{apm_id}")
+def journey_status_by_apm(
+    apm_id: str,
+    x_user_authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Return structured, access-controlled progress for the Journey UI."""
+
+    if not OAUTH_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="Google sign-in is not configured.")
+
+    context_token = _user_token.set("")
+    try:
+        user = _verify_user(x_user_authorization)
+        try:
+            return get_service().status_by_apm_id_for_subject(
+                apm_id, user["subject"]
+            )
+        except ApmAccessDenied as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except JourneyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        _user_token.reset(context_token)
 
 
 @app.post("/v1/query", response_model=QueryResponse)
