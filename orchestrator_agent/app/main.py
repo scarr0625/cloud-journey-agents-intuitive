@@ -280,7 +280,7 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-PLAYGROUND_HTML = """<!doctype html>
+PLAYGROUND_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -372,6 +372,8 @@ PLAYGROUND_HTML = """<!doctype html>
     .detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; }
     .phase-list { padding: 16px; }
     .phase-item { position: relative; padding: 15px 0 18px 40px; border-bottom: 1px solid #29455b; }
+    .phase-item.current { margin: 4px -8px; padding-left: 48px; padding-right: 8px; border-radius: 10px; background: rgba(59, 155, 227, .07); }
+    .phase-item.current .phase-bullet { left: 8px; }
     .phase-item:last-child { border-bottom: 0; }
     .phase-bullet { position: absolute; left: 0; top: 13px; width: 27px; height: 27px; display: grid; place-items: center; border: 2px solid #456882; border-radius: 50%; color: #8da7bf; font-size: .72rem; font-weight: 800; }
     .phase-item.done .phase-bullet { background: #2c87c3; color: white; border-color: #2c87c3; }
@@ -389,6 +391,7 @@ PLAYGROUND_HTML = """<!doctype html>
     .timeline-item:last-child { border-bottom: 0; }
     .timeline-item strong, .timeline-item small { display: block; font-size: .76rem; }
     .timeline-item small { color: var(--muted); margin-top: 4px; }
+    .progress-update { margin: 0 0 18px; padding: 12px 15px; border: 1px solid #246a91; border-left: 4px solid var(--blue); border-radius: 9px; background: #0c2738; color: #cfeaff; font-size: .8rem; }
     dialog { width: min(470px, calc(100vw - 30px)); padding: 0; color: inherit; background: var(--panel); border: 1px solid #36566f; border-radius: 14px; box-shadow: 0 30px 100px #000; }
     dialog::backdrop { background: rgba(0, 8, 14, .78); backdrop-filter: blur(3px); }
     .dialog-body { padding: 24px; }
@@ -399,6 +402,8 @@ PLAYGROUND_HTML = """<!doctype html>
     .compass-panel { position: fixed; right: 18px; bottom: 18px; width: min(470px, calc(100vw - 36px)); height: min(680px, calc(100vh - 96px)); display: grid; grid-template-rows: auto 1fr auto; background: #071725; border: 1px solid #31526a; border-radius: 18px; box-shadow: 0 30px 90px rgba(0,0,0,.55); z-index: 40; overflow: hidden; transform: translateY(16px); opacity: 0; pointer-events: none; transition: .2s ease; }
     .compass-panel.open { transform: none; opacity: 1; pointer-events: auto; }
     .chat-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid #244158; }
+    .chat-title strong, .chat-title small { display: block; }
+    .chat-title small { margin-top: 3px; color: #7fa1bb; font-size: .68rem; font-weight: 650; }
     .chat-head button { background: transparent; color: #9fb4c7; font-size: 1.2rem; }
     .messages { overflow: auto; padding: 18px; }
     .message { max-width: 90%; margin-bottom: 14px; padding: 11px 13px; border-radius: 12px; white-space: pre-wrap; font-size: .82rem; line-height: 1.5; }
@@ -468,7 +473,7 @@ PLAYGROUND_HTML = """<!doctype html>
   <button class="fab hidden" id="compass-fab" aria-label="Open Cloud Compass">☁</button>
   <aside class="compass-panel" id="compass-panel" aria-label="Cloud Compass agent">
     <div class="chat-head">
-      <strong>☁ &nbsp;Cloud Compass</strong>
+      <div class="chat-title"><strong>☁ &nbsp;Cloud Compass</strong><small id="chat-context">Portfolio conversation</small></div>
       <button id="close-chat" aria-label="Close agent">×</button>
     </div>
     <div class="messages" id="messages" aria-live="polite"></div>
@@ -514,6 +519,7 @@ PLAYGROUND_HTML = """<!doctype html>
     const queryInput = document.getElementById('query');
     const send = document.getElementById('send');
     const messagesEl = document.getElementById('messages');
+    const chatContext = document.getElementById('chat-context');
     const compassPanel = document.getElementById('compass-panel');
     const compassFab = document.getElementById('compass-fab');
     const linkDialog = document.getElementById('link-dialog');
@@ -522,12 +528,13 @@ PLAYGROUND_HTML = """<!doctype html>
     const linkSubmit = document.getElementById('link-submit');
     let userIdToken = null;
     let userProfile = null;
-    let sessionId = sessionStorage.getItem('orchestratorSessionId');
     let knownApms = [];
     let activeApm = null;
     let currentView = 'portfolio';
-    let messages = [{role: 'agent', text: 'Hi, I’m Cloud Compass. Link an APM ID or ask me about your application estate.'}];
+    let chatSessions = {};
+    let progressTimer = null;
     const journeys = new Map();
+    const journeyUpdates = new Map();
 
     const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -537,6 +544,36 @@ PLAYGROUND_HTML = """<!doctype html>
     const displayApm = value => /^\d+$/.test(value) ? `APM${value}` : value;
     const appName = journey => journey?.context?.inventory?.application_name || `Application ${displayApm(journey?.apm_id || '')}`;
     const storageKey = () => `cloudCompassApms:${userProfile?.sub || 'unknown'}`;
+    const chatStorageKey = () => `cloudCompassChats:${userProfile?.sub || 'unknown'}`;
+    const chatKey = apm => apm ? `apm:${apm}` : 'portfolio';
+
+    function chatFor(apm = activeApm) {
+      const key = chatKey(apm);
+      if (!chatSessions[key]) {
+        const introduction = apm
+          ? `This conversation is only for ${displayApm(apm)}. Its context and agent session are separate from your other applications.`
+          : 'Hi, I’m Cloud Compass. Link an APM ID or ask me about your application estate.';
+        chatSessions[key] = {sessionId: null, messages: [{role: 'agent', text: introduction}]};
+      }
+      return chatSessions[key];
+    }
+
+    function saveChatSessions() {
+      sessionStorage.setItem(chatStorageKey(), JSON.stringify(chatSessions));
+    }
+
+    function recordJourney(journey) {
+      const previous = journeys.get(journey.apm_id);
+      journeys.set(journey.apm_id, journey);
+      if (previous && previous.current_state !== journey.current_state) {
+        journeyUpdates.set(journey.apm_id, {
+          from: previous.current_state,
+          to: journey.current_state,
+          at: new Date()
+        });
+      }
+      return previous?.current_state !== journey.current_state;
+    }
 
     function gate(enabled) {
       interaction.disabled = !enabled;
@@ -594,7 +631,7 @@ PLAYGROUND_HTML = """<!doctype html>
       const available = knownApms.map(apm => journeys.get(apm)).filter(Boolean);
       const focus = journeys.get(activeApm) || available[0];
       const blocked = focus && ['WAITING_FOR_APPROVAL', 'FAILED', 'REJECTED'].includes(focus.current_state);
-      screen.innerHTML = `<div class="workspace-head"><div><h1>Portfolio Overview</h1><p>All applications you can access, and what needs your attention.</p></div><button class="primary" data-action="link">+ Start a new Cloud Journey</button></div>
+      screen.innerHTML = `<div class="workspace-head"><div><h1>Portfolio Overview</h1><p>All applications you can access, and what needs your attention.</p></div><div><button class="secondary" data-action="refresh">Refresh progress</button> <button class="primary" data-action="link">+ Start a new Cloud Journey</button></div></div>
         ${focus ? `<section class="progress-card panel"><div class="progress-top"><p class="eyebrow">Journey progress — ${escapeHtml(displayApm(focus.apm_id))}</p><button class="secondary" data-action="open" data-apm="${escapeHtml(focus.apm_id)}">View full journey →</button></div>${stepperMarkup(focus)}</section>` : ''}
         ${blocked ? `<section class="notice panel"><span class="notice-icon">△</span><div><strong>${focus.current_state === 'WAITING_FOR_APPROVAL' ? 'Governance review is waiting for an external decision' : `Journey needs attention — ${prettyState(focus.current_state)}`}</strong><small>Cloud Compass can explain the durable status and recommended next action.</small></div><button class="secondary" data-action="ask-status">Ask Compass →</button></section>` : ''}
         <div class="progress-top"><p class="eyebrow">My applications</p></div>
@@ -627,6 +664,7 @@ PLAYGROUND_HTML = """<!doctype html>
       const journey = journeys.get(activeApm);
       if (!journey) { renderPortfolio(); return; }
       const current = phaseIndex(journey);
+      const update = journeyUpdates.get(activeApm);
       const phaseItems = PHASES.map((phase, index) => {
         const done = index < current || journey.current_state === 'COMPLETED';
         const here = index === current && journey.current_state !== 'COMPLETED';
@@ -637,7 +675,8 @@ PLAYGROUND_HTML = """<!doctype html>
         </div>` : '';
         return `<div class="phase-item ${done ? 'done' : ''} ${here ? 'current' : ''}"><span class="phase-bullet">${done ? '✓' : index + 1}</span><h3>${index + 1} · ${escapeHtml(phase.name)}</h3><p>${escapeHtml(phaseDescription(index, journey))}</p><span class="phase-state status-pill ${here ? pillClass(journey.current_state) : ''}">${done ? 'Complete' : here ? escapeHtml(prettyState(journey.current_state)) : 'Upcoming'}</span>${governance}</div>`;
       }).join('');
-      screen.innerHTML = `<div class="workspace-head"><div><h1>${escapeHtml(displayApm(journey.apm_id))} — ${escapeHtml(appName(journey))}</h1><p>Owner: ${escapeHtml(journey.requested_by_email)} · Group: ${escapeHtml(journey.access_group_id)} · <span class="status-pill ${pillClass(journey.current_state)}">${escapeHtml(prettyState(journey.current_state))}</span></p></div><button class="primary" data-action="continue">Continue with Compass →</button></div>
+      screen.innerHTML = `<div class="workspace-head"><div><h1>${escapeHtml(displayApm(journey.apm_id))} — ${escapeHtml(appName(journey))}</h1><p>Owner: ${escapeHtml(journey.requested_by_email)} · Group: ${escapeHtml(journey.access_group_id)} · <span class="status-pill ${pillClass(journey.current_state)}">${escapeHtml(prettyState(journey.current_state))}</span></p></div><div><button class="secondary" data-action="refresh">Refresh progress</button> <button class="primary" data-action="continue">Continue with Compass →</button></div></div>
+        ${update ? `<div class="progress-update" role="status">Journey progress updated: <strong>${escapeHtml(prettyState(update.from))}</strong> → <strong>${escapeHtml(prettyState(update.to))}</strong></div>` : ''}
         <div class="detail-layout"><section class="phase-list panel"><p class="eyebrow">Journey phases</p>${phaseItems}</section>
         <aside class="side-stack"><section class="side-card panel"><div class="progress-top"><h2>☁ Cloud Compass</h2><span class="status-pill">Context-aware</span></div><div class="compass-callout">${journey.current_state === 'WAITING_FOR_APPROVAL' ? 'Your plan is waiting for independent approval. I can explain the governance boundary or check whether a decision has been recorded.' : `Your Journey is in ${prettyState(journey.current_state)}. I can gather missing details, explain blockers, and guide the next durable action.`}</div><button class="primary" data-action="continue">Ask Compass</button></section>
         <section class="side-card panel"><p class="eyebrow">Linked work</p><div class="timeline-item"><strong>${journey.current_state === 'WAITING_FOR_APPROVAL' ? 'Governance approval' : 'Cloud Journey workflow'}</strong><small>${escapeHtml(journey.journey_id)} · ${escapeHtml(prettyState(journey.current_state))}</small></div></section>
@@ -652,7 +691,12 @@ PLAYGROUND_HTML = """<!doctype html>
     }
 
     function renderMessages() {
-      messagesEl.innerHTML = messages.map(message => `<div class="message ${message.role}">${escapeHtml(message.text)}</div>`).join('');
+      const chat = chatFor();
+      messagesEl.innerHTML = chat.messages.map(message => `<div class="message ${message.role}">${escapeHtml(message.text)}</div>`).join('');
+      const journey = activeApm ? journeys.get(activeApm) : null;
+      chatContext.textContent = activeApm
+        ? `${displayApm(activeApm)} · ${journey ? appName(journey) : 'Application conversation'}`
+        : 'Portfolio conversation';
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
@@ -680,6 +724,7 @@ PLAYGROUND_HTML = """<!doctype html>
     }
 
     async function refreshJourneys() {
+      const portfolioChat = chatFor(null);
       try {
         const response = await fetch('/v1/journeys', {
           headers: {'X-User-Authorization': 'Bearer ' + userIdToken}
@@ -687,57 +732,77 @@ PLAYGROUND_HTML = """<!doctype html>
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
         for (const journey of data.journeys) {
-          journeys.set(journey.apm_id, journey);
+          recordJourney(journey);
           if (!knownApms.includes(journey.apm_id)) knownApms.push(journey.apm_id);
         }
         if (!activeApm && knownApms.length) activeApm = knownApms[0];
         localStorage.setItem(storageKey(), JSON.stringify(knownApms));
       } catch (error) {
-        messages.push({role: 'agent', text: `Could not load your Journey portfolio: ${error.message}`});
+        portfolioChat.messages.push({role: 'agent', text: `Could not load your Journey portfolio: ${error.message}`});
       }
       await Promise.all(knownApms.map(async apm => {
         try {
           const journey = await fetchJourney(apm);
-          if (journey) journeys.set(apm, journey);
+          if (journey) recordJourney(journey);
         } catch (error) {
-          messages.push({role: 'agent', text: `Could not refresh ${displayApm(apm)}: ${error.message}`});
+          chatFor(apm).messages.push({role: 'agent', text: `Could not refresh ${displayApm(apm)}: ${error.message}`});
         }
       }));
+      saveChatSessions();
       renderScreen();
+      renderMessages();
     }
 
-    async function runAgent(question) {
+    async function refreshActiveJourney() {
+      if (!userIdToken || !activeApm) return;
+      try {
+        const journey = await fetchJourney(activeApm);
+        if (journey) {
+          recordJourney(journey);
+          renderScreen();
+          renderMessages();
+        }
+      } catch (_error) {
+        // Background refresh is best-effort; explicit actions report failures.
+      }
+    }
+
+    async function runAgent(question, apm, chat) {
       const headers = {'Content-Type': 'application/json', 'X-User-Authorization': 'Bearer ' + userIdToken};
-      const contextualQuestion = activeApm && !question.includes(activeApm) ? `${question}\n\nContext: APM ID ${activeApm}.` : question;
+      const contextualQuestion = apm && !question.includes(apm) ? `${question}\n\nContext: APM ID ${apm}.` : question;
       const requestBody = {query: contextualQuestion};
-      if (sessionId) requestBody.session_id = sessionId;
+      if (chat.sessionId) requestBody.session_id = chat.sessionId;
       const response = await fetch('/v1/query', {method: 'POST', headers, body: JSON.stringify(requestBody)});
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-      sessionId = data.session_id;
-      sessionStorage.setItem('orchestratorSessionId', sessionId);
+      chat.sessionId = data.session_id;
+      saveChatSessions();
       return data.answer;
     }
 
     async function sendQuery(question = queryInput.value.trim()) {
       if (!userIdToken || !question) return;
+      const apm = activeApm;
+      const chat = chatFor(apm);
       queryInput.value = '';
-      messages.push({role: 'user', text: question}, {role: 'agent', text: 'Working…'});
+      chat.messages.push({role: 'user', text: question}, {role: 'agent', text: 'Working…'});
+      saveChatSessions();
       openChat();
       send.disabled = true;
       try {
-        const answer = await runAgent(question);
-        messages[messages.length - 1] = {role: 'agent', text: answer};
-        if (activeApm) {
-          const journey = await fetchJourney(activeApm);
-          if (journey) journeys.set(activeApm, journey);
+        const answer = await runAgent(question, apm, chat);
+        chat.messages[chat.messages.length - 1] = {role: 'agent', text: answer};
+        if (apm) {
+          const journey = await fetchJourney(apm);
+          if (journey) recordJourney(journey);
         }
-        renderScreen();
+        if (activeApm === apm) renderScreen();
       } catch (error) {
-        messages[messages.length - 1] = {role: 'agent', text: `Request failed: ${error.message}`};
+        chat.messages[chat.messages.length - 1] = {role: 'agent', text: `Request failed: ${error.message}`};
       } finally {
         send.disabled = false;
-        renderMessages();
+        saveChatSessions();
+        if (activeApm === apm) renderMessages();
       }
     }
 
@@ -747,28 +812,31 @@ PLAYGROUND_HTML = """<!doctype html>
       linkSubmit.disabled = true;
       linkSubmit.innerHTML = '<span class="loading"></span> Linking';
       activeApm = normalized;
+      const chat = chatFor(normalized);
       try {
         let journey = await fetchJourney(normalized);
         if (!journey) {
           linkDialog.close();
-          messages.push({role: 'agent', text: `I couldn’t find an existing Journey for ${displayApm(normalized)}. I’ll verify access and start one now.`});
+          chat.messages.push({role: 'agent', text: `I couldn’t find an existing Journey for ${displayApm(normalized)}. I’ll verify access and start one now.`});
           openChat();
           renderMessages();
-          const answer = await runAgent(`Start a durable Cloud Journey for APM ${normalized}. Return its Journey ID and current durable state.`);
-          messages.push({role: 'agent', text: answer});
+          const answer = await runAgent(`Start a durable Cloud Journey for APM ${normalized}. Return its Journey ID and current durable state.`, normalized, chat);
+          chat.messages.push({role: 'agent', text: answer});
           journey = await fetchJourney(normalized);
         }
         if (!journey) throw new Error('The Journey was not created. Ask Cloud Compass for details.');
-        journeys.set(normalized, journey);
+        recordJourney(journey);
         if (!knownApms.includes(normalized)) knownApms.push(normalized);
         localStorage.setItem(storageKey(), JSON.stringify(knownApms));
+        saveChatSessions();
         currentView = 'journey';
         linkDialog.close();
         renderScreen();
         renderMessages();
       } catch (error) {
         linkDialog.close();
-        messages.push({role: 'agent', text: `Could not link ${displayApm(normalized)}: ${error.message}`});
+        chat.messages.push({role: 'agent', text: `Could not link ${displayApm(normalized)}: ${error.message}`});
+        saveChatSessions();
         openChat();
       } finally {
         linkSubmit.disabled = false;
@@ -780,6 +848,7 @@ PLAYGROUND_HTML = """<!doctype html>
       userIdToken = token;
       userProfile = profile;
       try { knownApms = JSON.parse(localStorage.getItem(storageKey()) || '[]'); } catch { knownApms = []; }
+      try { chatSessions = JSON.parse(sessionStorage.getItem(chatStorageKey()) || '{}'); } catch { chatSessions = {}; }
       activeApm = knownApms[0] || null;
       who.innerHTML = '';
       const tag = document.createElement('span');
@@ -791,12 +860,16 @@ PLAYGROUND_HTML = """<!doctype html>
       signOut.textContent = 'Sign out';
       signOut.addEventListener('click', () => {
         google.accounts.id.disableAutoSelect();
+        sessionStorage.removeItem(chatStorageKey());
+        sessionStorage.removeItem('orchestratorSessionId');
         userIdToken = null;
         userProfile = null;
-        sessionId = null;
         knownApms = [];
+        chatSessions = {};
         journeys.clear();
-        sessionStorage.removeItem('orchestratorSessionId');
+        journeyUpdates.clear();
+        clearInterval(progressTimer);
+        progressTimer = null;
         workspace.classList.add('hidden');
         authView.classList.remove('hidden');
         closeChat();
@@ -807,7 +880,10 @@ PLAYGROUND_HTML = """<!doctype html>
       workspace.classList.remove('hidden');
       gate(true);
       renderScreen();
+      renderMessages();
       refreshJourneys();
+      clearInterval(progressTimer);
+      progressTimer = setInterval(refreshActiveJourney, 10000);
     }
 
     function decodeClaims(credential) {
@@ -849,7 +925,18 @@ PLAYGROUND_HTML = """<!doctype html>
       const button = event.target.closest('button[data-action]');
       if (!button) return;
       if (button.dataset.action === 'link') { apmInput.value = ''; linkDialog.showModal(); setTimeout(() => apmInput.focus(), 50); }
-      if (button.dataset.action === 'open') { activeApm = button.dataset.apm; currentView = 'journey'; renderScreen(); }
+      if (button.dataset.action === 'open') {
+        activeApm = button.dataset.apm;
+        currentView = 'journey';
+        queryInput.value = '';
+        renderScreen();
+        renderMessages();
+        refreshActiveJourney();
+      }
+      if (button.dataset.action === 'refresh') {
+        if (currentView === 'journey') refreshActiveJourney();
+        else refreshJourneys();
+      }
       if (button.dataset.action === 'continue') openChat('What should I do next for this Cloud Journey?');
       if (button.dataset.action === 'ask-status') openChat('Explain the current blocker and tell me what happens next.');
     });

@@ -113,6 +113,20 @@ def test_playground_starts_locked_and_renders_journey_workspace(monkeypatch) -> 
     assert "WAITING_FOR_APPROVAL: 1" in html
 
 
+def test_playground_keeps_per_apm_chat_sessions_and_refreshes_progress(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(main, "OAUTH_CLIENT_ID", "oauth-client")
+
+    html = main.playground()
+
+    assert "const chatKey = apm => apm ? `apm:${apm}` : 'portfolio'" in html
+    assert "if (chat.sessionId) requestBody.session_id = chat.sessionId" in html
+    assert "chat.sessionId = data.session_id" in html
+    assert "Journey progress updated:" in html
+    assert "setInterval(refreshActiveJourney, 10000)" in html
+
+
 def test_journey_progress_endpoint_uses_verified_google_subject(monkeypatch) -> None:
     class FakeService:
         def status_by_apm_id_for_subject(self, apm_id: str, subject: str):
