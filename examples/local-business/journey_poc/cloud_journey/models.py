@@ -1,4 +1,4 @@
-"""SQLAlchemy models for durable Journey state and its audit trail."""
+"""Journey business records and audit history in cloud-journey-db."""
 
 from __future__ import annotations
 
@@ -128,3 +128,28 @@ class JourneyOperation(Base):
     )
 
     journey: Mapped[Journey] = relationship(back_populates="operations")
+
+
+class JourneyOperationStatus(Base):
+    """Business-facing progress; never used as the batch execution checkpoint."""
+
+    __tablename__ = "journey_operation_status"
+
+    journey_id: Mapped[str] = mapped_column(ForeignKey("journeys.id", ondelete="CASCADE"), primary_key=True)
+    operation_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    stage: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    result_reference: Mapped[str] = mapped_column(String(256), nullable=False)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class JourneyExternalDependency(Base):
+    __tablename__ = "journey_external_dependency"
+
+    journey_id: Mapped[str] = mapped_column(ForeignKey("journeys.id", ondelete="CASCADE"), primary_key=True)
+    dependency_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    external_reference: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    observation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

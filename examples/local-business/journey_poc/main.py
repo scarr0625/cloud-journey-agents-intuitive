@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import contextvars
 import json
 import os
@@ -20,8 +21,9 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from google.adk.agents import Agent
+from google.adk.events import Event, EventActions
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService, Session
+from google.adk.sessions import Session
 from google.auth.exceptions import TransportError
 from google.auth.transport.requests import Request
 from google.genai import types
@@ -32,9 +34,11 @@ from .cloud_journey.capability import (
     DURABLE_JOURNEY_INSTRUCTION,
     DURABLE_JOURNEY_TOOLS,
 )
+from .cloud_journey.chat_status import CHAT_ASSISTANT_INSTRUCTION, CHAT_ASSISTANT_TOOLS
 from .cloud_journey.identity import verified_identity_state
 from .cloud_journey.state_machine import JourneyError
 from .cloud_journey.tools import ApmAccessDenied, get_service
+from journey_sessions.persistence import build_session_service
 
 APP_NAME = "orchestrator"
 MODEL = os.environ.get("ORCHESTRATOR_MODEL", "gemini-3.6-flash")
@@ -229,13 +233,26 @@ root_agent = Agent(
 )
 
 
-# Conversation state is process-local and improves multi-turn interaction. The
-# Journey itself remains recoverable from PostgreSQL by Journey ID or APM ID.
-session_service = InMemorySessionService()
+# ADK owns conversation tables in session-db. This runtime never opens the
+# batch agents' durable-state-db.
+session_service = build_session_service()
+atexit.register(session_service.close)
 runner = Runner(
     agent=root_agent,
     app_name=APP_NAME,
     session_service=session_service,
+)
+
+CHAT_APP_NAME = "chat_assistant"
+chat_assistant = Agent(
+    name="chat_assistant",
+    model=MODEL,
+    description="Explains authorized, persisted Journey progress without changing it.",
+    instruction=CHAT_ASSISTANT_INSTRUCTION,
+    tools=CHAT_ASSISTANT_TOOLS,
+)
+chat_runner = Runner(
+    agent=chat_assistant, app_name=CHAT_APP_NAME, session_service=session_service,
 )
 
 
@@ -243,12 +260,14 @@ def _get_or_create_session(
     user_id: str,
     requested_session_id: str | None,
     initial_state: dict[str, str] | None = None,
+    *,
+    app_name: str = APP_NAME,
 ) -> Session:
-    """Reuse a live ADK session or recreate it after a process restart."""
+    """Reload persisted history and refresh verified claims without deleting it."""
 
     session_id = requested_session_id or uuid4().hex
     session = session_service.get_session_sync(
-        app_name=APP_NAME,
+        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
     )
@@ -257,15 +276,15 @@ def _get_or_create_session(
             session.state.get(key) == value for key, value in initial_state.items()
         ):
             return session
-        # Trusted claims changed or are missing. Recreate only this process-local
-        # conversation; the PostgreSQL Journey remains unaffected and recoverable.
-        session_service.delete_session_sync(
-            app_name=APP_NAME,
-            user_id=user_id,
-            session_id=session_id,
+        session_service.append_event_sync(
+            session,
+            Event(author="system", actions=EventActions(state_delta=initial_state)),
+        )
+        return session_service.get_session_sync(
+            app_name=app_name, user_id=user_id, session_id=session_id,
         )
     return session_service.create_session_sync(
-        app_name=APP_NAME,
+        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         state=initial_state,
@@ -510,6 +529,7 @@ PLAYGROUND_HTML = r"""<!doctype html>
       WAITING_FOR_APPROVAL: 1, APPROVED: 1, REJECTED: 1,
       PROVISIONING_AGENT_IDENTITY: 2, AGENT_IDENTITY_READY: 2,
       PREPARING_APP_FACTORY: 2, APP_FACTORY_READY: 2,
+      READY_TO_PROVISION: 2, APP_FACTORY_VALIDATION_ERROR: 2,
       SUBMITTING_CLOUD_BUILD: 2, CLOUD_BUILD_RUNNING: 2,
       VALIDATING_DEPLOYMENT: 3, COMPLETED: 4
     };
@@ -1046,12 +1066,13 @@ def journey_status_by_apm(
         _user_token.reset(context_token)
 
 
-@app.post("/v1/query", response_model=QueryResponse)
-def query(
+def _query_with_runner(
     request: QueryRequest,
-    x_user_authorization: str | None = Header(default=None),
+    x_user_authorization: str | None,
+    agent_runner: Runner,
+    app_name: str,
 ) -> QueryResponse:
-    """Route one user query through the ADK orchestrator."""
+    """Run an authenticated turn within the selected application's session."""
 
     context_token = _user_token.set("")
     try:
@@ -1063,14 +1084,14 @@ def query(
             trusted_state = verified_identity_state(user)
 
         session = _get_or_create_session(
-            user_id, request.session_id, initial_state=trusted_state
+            user_id, request.session_id, initial_state=trusted_state, app_name=app_name,
         )
         message = types.Content(
             role="user", parts=[types.Part.from_text(text=request.query)]
         )
 
         text_parts: list[str] = []
-        for event in runner.run(
+        for event in agent_runner.run(
             user_id=user_id,
             session_id=session.id,
             new_message=message,
@@ -1086,3 +1107,21 @@ def query(
         return QueryResponse(answer="\n".join(text_parts), session_id=session.id)
     finally:
         _user_token.reset(context_token)
+
+
+@app.post("/v1/query", response_model=QueryResponse)
+def query(
+    request: QueryRequest,
+    x_user_authorization: str | None = Header(default=None),
+) -> QueryResponse:
+    """Existing interactive orchestration, discovery and approval flow."""
+    return _query_with_runner(request, x_user_authorization, runner, APP_NAME)
+
+
+@app.post("/v1/chat/query", response_model=QueryResponse)
+def chat_query(
+    request: QueryRequest,
+    x_user_authorization: str | None = Header(default=None),
+) -> QueryResponse:
+    """Read-only Chat Assistant with its own persisted conversation sessions."""
+    return _query_with_runner(request, x_user_authorization, chat_runner, CHAT_APP_NAME)

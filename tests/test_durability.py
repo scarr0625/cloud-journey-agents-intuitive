@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from orchestrator_agent.app.cloud_journey.tools import JourneyService
+from journey_poc.cloud_journey.tools import JourneyService
 
 
 def test_state_survives_engine_and_service_restart(engine, service) -> None:

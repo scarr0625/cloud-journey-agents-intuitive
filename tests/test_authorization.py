@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from orchestrator_agent.app.cloud_journey.tools import AuthorizationDenied
+from journey_poc.cloud_journey.tools import AuthorizationDenied
 
 
 def waiting_journey(service) -> str:

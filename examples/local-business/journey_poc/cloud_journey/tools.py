@@ -37,6 +37,8 @@ from .models import (
     ApmGroupAssignment,
     JourneyEvent,
     JourneyOperation,
+    JourneyOperationStatus,
+    JourneyExternalDependency,
 )
 from .state_machine import (
     Actor,
@@ -704,10 +706,10 @@ class JourneyService:
             note="The proposed plan is ready for independent approval; no resources were provisioned.",
         )
 
-    def _persist_execution_checkpoint(
+    def _persist_execution_outcome(
         self, journey_id: str, state: JourneyState, actor: Actor
     ) -> None:
-        checkpoint_context: dict[JourneyState, dict[str, Any]] = {
+        outcome_context: dict[JourneyState, dict[str, Any]] = {
             JourneyState.AGENT_IDENTITY_READY: {
                 "agent_identity": {
                     "provider": "MyAccess MCP",
@@ -721,13 +723,13 @@ class JourneyService:
                 }
             },
         }
-        updates = checkpoint_context.get(state)
+        updates = outcome_context.get(state)
         if updates is not None:
             self.state_machine.merge_context(
                 journey_id,
                 updates,
                 actor=actor,
-                message=f"Persisted simulated {state.value.lower()} checkpoint",
+                message=f"Persisted simulated {state.value.lower()} business outcome",
             )
 
     def approve(self, journey_id: str, user_name: str) -> dict[str, Any]:
@@ -776,7 +778,7 @@ class JourneyService:
                         metadata=metadata,
                     )
                 )
-                self._persist_execution_checkpoint(journey_id, target, actor)
+                self._persist_execution_outcome(journey_id, target, actor)
             return transitions
 
         transitions = self._run_operation(journey_id, "APPROVE_JOURNEY", action)
@@ -942,6 +944,19 @@ class JourneyService:
     def resume_after_approval(self, journey_id: str) -> dict[str, Any]:
         """Resume simulated execution only after the database says APPROVED."""
         def action() -> list[TransitionResult]:
+            current = JourneyState(self.state_machine.get_journey(journey_id).status)
+            approved = any(
+                event.event_type == "STATE_TRANSITION"
+                and event.to_state == JourneyState.APPROVED.value
+                for event in self.state_machine.get_events(journey_id)
+            )
+            if not approved:
+                # The separate batch flow can submit AD from APM_VALIDATED.
+                # That transition must not let this interactive tool skip its
+                # existing independent approval boundary.
+                raise InvalidTransition(
+                    journey_id, current, JourneyState.PROVISIONING_AGENT_IDENTITY,
+                )
             transitions: list[TransitionResult] = []
             while True:
                 current = JourneyState(self.state_machine.get_journey(journey_id).status)
@@ -967,7 +982,7 @@ class JourneyService:
                         metadata=metadata,
                     )
                 )
-                self._persist_execution_checkpoint(journey_id, target, actor)
+                self._persist_execution_outcome(journey_id, target, actor)
             return transitions
 
         transitions = self._run_operation(journey_id, "RESUME_AFTER_APPROVAL", action)
@@ -1009,6 +1024,22 @@ class JourneyService:
         journey = self.state_machine.get_journey(journey_id)
         events = self.state_machine.get_events(journey_id)
         history = [self._event_dict(event) for event in events]
+        with self.session_factory() as session:
+            operations = session.scalars(select(JourneyOperationStatus).where(
+                JourneyOperationStatus.journey_id == journey_id,
+            ).order_by(JourneyOperationStatus.operation_key)).all()
+            dependencies = session.scalars(select(JourneyExternalDependency).where(
+                JourneyExternalDependency.journey_id == journey_id,
+            ).order_by(JourneyExternalDependency.dependency_key)).all()
+            operation_status = [{
+                "operation_key": item.operation_key, "stage": item.stage,
+                "status": item.status, "result_reference": item.result_reference,
+                "result": item.result,
+            } for item in operations]
+            external_dependencies = [{
+                "dependency_key": item.dependency_key, "external_reference": item.external_reference,
+                "status": item.status,
+            } for item in dependencies]
         response: dict[str, Any] = {
             "ok": True,
             "journey_id": journey.id,
@@ -1022,6 +1053,8 @@ class JourneyService:
             "role": journey.role,
             "last_error": journey.last_error,
             "context": journey.context,
+            "operation_status": operation_status,
+            "external_dependencies": external_dependencies,
             "transitions": [_transition_dict(item) for item in transitions],
             "state_path": [
                 event.to_state

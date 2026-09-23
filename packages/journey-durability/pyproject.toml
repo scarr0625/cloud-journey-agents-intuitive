@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "journey-durability"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["SQLAlchemy>=2,<3", "psycopg[binary]>=3.1,<4", "cloud-sql-python-connector[pg8000]>=1.18,<2", "python-dotenv>=1,<2", "journey-mcp==0.1.0"]
+
+[tool.setuptools]
+packages = ["journey_durability"]
+
+[tool.setuptools.package-dir]
+journey_durability = "journey_durability"

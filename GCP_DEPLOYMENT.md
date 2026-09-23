@@ -1,110 +1,95 @@
-# Deploy the Orchestrator to Cloud Run
+# Deploy the five agent images to Cloud Run
 
-The FastAPI application in `orchestrator_agent/app/main.py` is the only deployment
-entry point. No Python deployment script or Agent Runtime object is required.
-Journey state remains in Cloud SQL; HTTP conversation sessions are process-local
-and may be recreated, while a Journey remains recoverable by Journey ID or APM ID.
+This repository supplies independent Dockerfiles, not a deployment of the client's
+MCP/Data API. Build from the repository root and push each image to your approved
+Artifact Registry repository. No cloud changes are performed by the local setup.
 
-## 1. Set command variables
-
-Run these commands in PowerShell and replace the example values:
+## Build context
 
 ```powershell
-$PROJECT_ID = "your-project-id"
-$REGION = "us-central1"
-$SERVICE = "cloud-journey-orchestrator"
-$RUNTIME_SA = "cloud-journey-orchestrator@$PROJECT_ID.iam.gserviceaccount.com"
-$CLOUD_SQL_INSTANCE = "${PROJECT_ID}:${REGION}:journey-db"
-$INVENTORY_AGENT_URL = "https://inventory-agent-url"
-$APM_AGENT_URL = "https://apm-agent-url"
-$OAUTH_CLIENT_ID = "your-google-web-client-id.apps.googleusercontent.com"
-
-gcloud config set project $PROJECT_ID
+docker build -f src/agent-apm-validation/Dockerfile -t REGION-docker.pkg.dev/PROJECT/REPOSITORY/agent-apm-validation:VERSION .
+docker build -f src/agent-ad-provisioning/Dockerfile -t REGION-docker.pkg.dev/PROJECT/REPOSITORY/agent-ad-provisioning:VERSION .
+docker build -f src/agent-app-factory/Dockerfile -t REGION-docker.pkg.dev/PROJECT/REPOSITORY/agent-app-factory:VERSION .
+docker build -f src/agent-assistant/Dockerfile -t REGION-docker.pkg.dev/PROJECT/REPOSITORY/agent-assistant:VERSION .
+docker build -f src/agent-orchestrator/Dockerfile -t REGION-docker.pkg.dev/PROJECT/REPOSITORY/agent-orchestrator:VERSION .
 ```
 
-## 2. Enable APIs and create the runtime identity
+Use the same context (`.`) in the client's Cloud Build pipeline. The Dockerfile
+path selects the agent, while COPY paths are relative to the repository root.
+Shared-library changes require rebuilding each image that consumes the library.
+
+## Batch jobs
+
+Deploy APM Validation, AD Provisioning, and App Factory as separate Cloud Run
+Jobs. Each image fixes its agent identity; there is no caller-controlled --agent
+argument. Give each job its own workload identity and corresponding MCP permissions.
+
+- `DURABLE_DATABASE_URL` connects to durable-state-db, using the Auth Proxy/socket
+  or another configured PostgreSQL endpoint.
+- Alternatively set `DURABLE_CLOUD_SQL_INSTANCE`, `DURABLE_DB_USER`,
+  `DURABLE_DB_NAME`, and `DURABLE_DB_PASSWORD`, or `DURABLE_DB_IAM_AUTH=true`.
+  `DURABLE_DB_IP_TYPE` defaults to PRIVATE and must match network connectivity.
+- `MCP_URL` is the client's Streamable HTTP endpoint. `MCP_CLOUD_RUN_AUDIENCE`
+  requests a Google service ID token in X-Serverless-Authorization. Optional
+  `MCP_BEARER_TOKEN` is an application credential supplied through a secret.
+- Do not configure Business DB or Session DB connections on batch jobs.
+
+Apply `migrations/durable-state/000_execution_checkpoints.sql` once through your
+migration pipeline. Grant batch database identities the data privileges needed
+for checkpoint transactions. Deployed jobs never create tables.
+
+Example after pushing the image (replace every placeholder):
 
 ```powershell
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com aiplatform.googleapis.com sqladmin.googleapis.com secretmanager.googleapis.com
-
-gcloud iam service-accounts create cloud-journey-orchestrator --display-name="Cloud Journey Orchestrator"
-
-gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:$RUNTIME_SA" --role="roles/aiplatform.user"
-gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:$RUNTIME_SA" --role="roles/cloudsql.client"
-gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:$RUNTIME_SA" --role="roles/secretmanager.secretAccessor"
+gcloud run jobs deploy agent-apm-validation --image=REGION-docker.pkg.dev/PROJECT/REPOSITORY/agent-apm-validation:VERSION --region=REGION --service-account=APM_JOB_SA --tasks=1 --parallelism=1 --task-timeout=240s --max-retries=0 --set-env-vars="MCP_URL=https://PRIVATE_MCP/mcp,MCP_CLOUD_RUN_AUDIENCE=https://PRIVATE_MCP" --set-secrets="DURABLE_DATABASE_URL=DURABLE_URL_SECRET:latest"
 ```
 
-Grant this service account `roles/run.invoker` on each private downstream Cloud
-Run specialist:
+Attach the Cloud SQL instance when using a Unix socket, or configure the network
+and Cloud SQL connector as required by the selected connection method. Apply
+corresponding configuration to the AD and App Factory jobs. Keep the job timeout
+below the 300-second checkpoint lease. If a process is killed, a retry may need to
+wait until the lease expires. Use controlled retries in Workflows; a terminal
+negative business result should not be retried automatically.
+
+Workflows passes `--journey-id` and `--workflow-run-id` to each execution. AD also
+accepts `--mode submit` or `--mode poll`. See [workflows/README.md](workflows/README.md)
+for ordering and the distinction between successful job execution and pending work.
+
+## HTTP services
+
+Deploy Assistant and Orchestrator as separate authenticated Cloud Run services.
+Both listen on port 8080. Configure `SESSION_DATABASE_URL` to session-db and inject
+verified Google user authentication configuration (`OAUTH_CLIENT_ID` and optional
+`ALLOWED_USER_DOMAINS`). ADK manages its own session tables; apply the client's
+chosen session-schema permissions/migration policy.
+
+Configure `ASSISTANT_URL` and `ASSISTANT_CLOUD_RUN_AUDIENCE` on the orchestrator.
+Grant its workload identity Cloud Run invoker access to the Assistant. It sends
+its service ID token in Authorization and the user's verified token separately
+in X-User-Authorization. Each service validates the end-user token.
+
+Configure MCP on the Assistant as above, plus `MCP_USER_AUTH_HEADER` to match the
+client's established delegation contract (X-User-Authorization by default).
+The MCP server must validate the delegated token and enforce user-level access;
+this header alone is not authorization. When the client uses an MCP-specific OAuth
+access token rather than the existing Google delegation contract, integrate its
+approved token exchange/provider before enabling that connection.
+
+Example after pushing the image:
 
 ```powershell
-gcloud run services add-iam-policy-binding inventory-agent --region=$REGION --member="serviceAccount:$RUNTIME_SA" --role="roles/run.invoker"
-gcloud run services add-iam-policy-binding apm-agent --region=$REGION --member="serviceAccount:$RUNTIME_SA" --role="roles/run.invoker"
+gcloud run deploy agent-assistant --image=REGION-docker.pkg.dev/PROJECT/REPOSITORY/agent-assistant:VERSION --region=REGION --service-account=ASSISTANT_SA --no-allow-unauthenticated --set-env-vars="OAUTH_CLIENT_ID=CLIENT_ID,MCP_URL=https://PRIVATE_MCP/mcp,MCP_CLOUD_RUN_AUDIENCE=https://PRIVATE_MCP" --set-secrets="SESSION_DATABASE_URL=SESSION_URL_SECRET:latest"
 ```
 
-## 3. Store the database password
+Configure the selected Gemini/Vertex AI model and credentials using the agent's
+`.env.example`. Deploy the orchestrator similarly with its Assistant URL and
+appropriate inbound gateway/IAM policy. Neither HTTP identity should have
+checkpoint database access. The old playground is an optional local example;
+it is not included in these production images.
 
-Create the secret once, then add the database password as a secret version. Do
-not put the password in the deployment command or repository.
+## Validation scope
 
-```powershell
-gcloud secrets create journey-db-password --replication-policy="automatic"
-gcloud secrets versions add journey-db-password --data-file="PATH_TO_PASSWORD_FILE"
-```
-
-Skip the first command if the secret already exists. Delete the temporary local
-password file after adding the version.
-
-## 4. Deploy directly from source
-
-The command overrides the Python buildpack start command so the nested FastAPI
-module is launched explicitly:
-
-```powershell
-$ENV_VARS = "GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION,ORCHESTRATOR_MODEL=gemini-2.5-flash,CLOUD_SQL_INSTANCE=$CLOUD_SQL_INSTANCE,CLOUD_SQL_IP_TYPE=PUBLIC,CLOUD_SQL_IAM_AUTH=false,DB_USER=journey,DB_NAME=durable_journey,INVENTORY_AGENT_URL=$INVENTORY_AGENT_URL,APM_AGENT_URL=$APM_AGENT_URL,OAUTH_CLIENT_ID=$OAUTH_CLIENT_ID,ALLOWED_USER_DOMAINS=example.com,REQUEST_TIMEOUT_SECONDS=90"
-
-gcloud run deploy $SERVICE `
-  --source=. `
-  --region=$REGION `
-  --service-account=$RUNTIME_SA `
-  --command=uvicorn `
-  --args="orchestrator_agent.app.main:app,--host=0.0.0.0,--port=8080" `
-  --set-env-vars=$ENV_VARS `
-  --set-secrets=DB_PASSWORD=journey-db-password:latest `
-  --allow-unauthenticated
-```
-
-`--allow-unauthenticated` permits the browser to load `/playground`; configure
-`OAUTH_CLIENT_ID` and `ALLOWED_USER_DOMAINS` so `/v1/query` still requires a
-verified Google user. If the service is API-only behind an authenticated gateway,
-use `--no-allow-unauthenticated` instead.
-
-For IAM database authentication, set `CLOUD_SQL_IAM_AUTH=true`, omit
-`--set-secrets`, and grant the runtime service account
-`roles/cloudsql.instanceUser` plus the required PostgreSQL privileges.
-
-## 5. Verify
-
-```powershell
-$SERVICE_URL = gcloud run services describe $SERVICE --region=$REGION --format="value(status.url)"
-Invoke-RestMethod "$SERVICE_URL/health"
-```
-
-Before using Journey tools, an administrator must add the signed-in user's stable
-Google `sub` to an application group. The subject must come from a trusted Google
-identity or directory source, never from chat input:
-
-```sql
-INSERT INTO access_group_members (group_id, user_subject)
-VALUES ('GROUP_1', 'VERIFIED_GOOGLE_SUBJECT')
-ON CONFLICT DO NOTHING;
-```
-
-The raw ID token is never written to this table, ADK session state, Journey
-context, or audit history.
-
-After registering the subject, open `$SERVICE_URL/playground` and start with:
-
-```text
-Start a durable Cloud Journey for APM004001.
-```
+Automated tests cover package boundaries, checkpoint recovery, the local business
+simulator, MCP adapters/transport, session persistence, and agent routing. Real
+client authorization, Data API transaction/idempotency guarantees, Cloud SQL,
+Cloud Run IAM, and network access require validation in the client's environment.

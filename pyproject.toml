@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "Durable Cloud Journey state machine PoC using Google ADK and PostgreSQL"
 requires-python = ">=3.11"
 dependencies = [
-  "google-adk>=1.0,<3.0",
+  "mcp>=1.26,<2",
+  "google-adk>=2.7,<3.0",
+  "aiosqlite>=0.20,<1.0",
   "google-auth>=2.47,<3.0",
   "fastapi>=0.115,<1.0",
   "httpx>=0.27,<1.0",
@@ -25,3 +27,21 @@ test = ["pytest>=8.0,<10.0"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+# The root distribution is for local development/testing only. Each image installs
+# its agent distribution and only its required shared packages.
+[tool.setuptools]
+packages = ["journey_mcp", "journey_durability", "journey_sessions", "agent_apm_validation", "agent_ad_provisioning", "agent_app_factory", "agent_assistant", "agent_orchestrator", "journey_poc", "journey_poc.cloud_journey", "workflows"]
+
+[tool.setuptools.package-dir]
+"journey_mcp" = "packages/journey-mcp/journey_mcp"
+"journey_durability" = "packages/journey-durability/journey_durability"
+"journey_sessions" = "packages/journey-sessions/journey_sessions"
+"agent_apm_validation" = "src/agent-apm-validation/app"
+"agent_ad_provisioning" = "src/agent-ad-provisioning/app"
+"agent_app_factory" = "src/agent-app-factory/app"
+"agent_assistant" = "src/agent-assistant/app"
+"agent_orchestrator" = "src/agent-orchestrator/app"
+"journey_poc" = "examples/local-business/journey_poc"
+"journey_poc.cloud_journey" = "examples/local-business/journey_poc/cloud_journey"
+"workflows" = "workflows"

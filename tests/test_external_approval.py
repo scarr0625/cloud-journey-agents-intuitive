@@ -4,9 +4,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from orchestrator_agent.app.cloud_journey import approval_backend
-from orchestrator_agent.app.cloud_journey.state_machine import InvalidTransition
-from orchestrator_agent.app.main import root_agent
+from journey_poc.cloud_journey import approval_backend
+from journey_poc.cloud_journey.state_machine import InvalidTransition
+from journey_poc.main import root_agent
 
 
 def waiting_journey(service) -> str:

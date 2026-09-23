@@ -16,7 +16,7 @@ from .models import Base
 load_dotenv()
 
 DEFAULT_DATABASE_URL = (
-    "postgresql+psycopg://journey:journey@localhost:5432/durable_journey"
+    "postgresql+psycopg://journey:journey@localhost:5432/cloud-journey-db"
 )
 
 _cloud_sql_connector: object | None = None
@@ -48,7 +48,9 @@ def build_engine(database_url: str | None = None, *, echo: bool | None = None) -
     )
 
 
-def _build_cloud_sql_engine(*, echo: bool | None = None) -> Engine:
+def _build_cloud_sql_engine(
+    *, echo: bool | None = None, database_name: str | None = None,
+) -> Engine:
     """Build a Cloud Run-friendly pool using the Cloud SQL connector."""
     global _cloud_sql_connector
     try:
@@ -59,7 +61,7 @@ def _build_cloud_sql_engine(*, echo: bool | None = None) -> Engine:
             "is not installed"
         ) from exc
 
-    required = ["CLOUD_SQL_INSTANCE", "DB_USER", "DB_NAME"]
+    required = ["CLOUD_SQL_INSTANCE", "DB_USER"] + ([] if database_name else ["DB_NAME"])
     missing = [name for name in required if not os.getenv(name)]
     if missing:
         raise RuntimeError(
@@ -88,7 +90,7 @@ def _build_cloud_sql_engine(*, echo: bool | None = None) -> Engine:
     def get_connection():
         connection_args: dict[str, object] = {
             "user": os.environ["DB_USER"],
-            "db": os.environ["DB_NAME"],
+            "db": database_name or os.environ["DB_NAME"],
         }
         if not iam_auth:
             connection_args["password"] = os.environ["DB_PASSWORD"]

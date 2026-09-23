@@ -1,0 +1,14 @@
+.git
+.venv
+.tmp
+**/__pycache__
+**/*.pyc
+**/*.egg-info
+**/build
+**/dist
+**/.env
+**/.env.*
+**/*.sqlite*
+**/*.db
+tests
+examples

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 from collections.abc import Collection
+from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -34,6 +35,8 @@ class JourneyState(str, Enum):
     AGENT_IDENTITY_READY = "AGENT_IDENTITY_READY"
     PREPARING_APP_FACTORY = "PREPARING_APP_FACTORY"
     APP_FACTORY_READY = "APP_FACTORY_READY"
+    READY_TO_PROVISION = "READY_TO_PROVISION"
+    APP_FACTORY_VALIDATION_ERROR = "APP_FACTORY_VALIDATION_ERROR"
     GENERATING_PLAN = "GENERATING_PLAN"
     WAITING_FOR_APPROVAL = "WAITING_FOR_APPROVAL"
     APPROVED = "APPROVED"
@@ -92,6 +95,12 @@ DOMAIN_EVENTS_BY_STATE: dict[JourneyState, tuple[DomainEventDefinition, ...]] = 
             "AppFactoryManifestPublished", "Manifest Generated"
         ),
     ),
+    JourneyState.READY_TO_PROVISION: (
+        DomainEventDefinition("ReadinessEvaluated", "Readiness Decision Produced"),
+    ),
+    JourneyState.APP_FACTORY_VALIDATION_ERROR: (
+        DomainEventDefinition("ReadinessEvaluated", "Readiness Decision Produced"),
+    ),
     JourneyState.SUBMITTING_CLOUD_BUILD: (
         DomainEventDefinition("ProvisioningStarted", "Deployment Started"),
     ),
@@ -123,7 +132,9 @@ PROCESSING_STATES = {
 ALLOWED_TRANSITIONS: dict[JourneyState, frozenset[JourneyState]] = {
     JourneyState.CREATED: frozenset({JourneyState.VALIDATING_APM}),
     JourneyState.VALIDATING_APM: frozenset({JourneyState.APM_VALIDATED, JourneyState.FAILED}),
-    JourneyState.APM_VALIDATED: frozenset({JourneyState.DISCOVERING_CLOUD_SERVICES}),
+    JourneyState.APM_VALIDATED: frozenset(
+        {JourneyState.DISCOVERING_CLOUD_SERVICES, JourneyState.PROVISIONING_AGENT_IDENTITY}
+    ),
     JourneyState.DISCOVERING_CLOUD_SERVICES: frozenset(
         {JourneyState.COLLECTING_ASSET_INVENTORY, JourneyState.FAILED}
     ),
@@ -138,9 +149,18 @@ ALLOWED_TRANSITIONS: dict[JourneyState, frozenset[JourneyState]] = {
         {JourneyState.PREPARING_APP_FACTORY}
     ),
     JourneyState.PREPARING_APP_FACTORY: frozenset(
-        {JourneyState.APP_FACTORY_READY, JourneyState.FAILED}
+        {
+            JourneyState.APP_FACTORY_READY,
+            JourneyState.READY_TO_PROVISION,
+            JourneyState.APP_FACTORY_VALIDATION_ERROR,
+            JourneyState.FAILED,
+        }
     ),
     JourneyState.APP_FACTORY_READY: frozenset({JourneyState.SUBMITTING_CLOUD_BUILD}),
+    JourneyState.READY_TO_PROVISION: frozenset({JourneyState.SUBMITTING_CLOUD_BUILD}),
+    JourneyState.APP_FACTORY_VALIDATION_ERROR: frozenset(
+        {JourneyState.PREPARING_APP_FACTORY}
+    ),
     JourneyState.GENERATING_PLAN: frozenset(
         {JourneyState.WAITING_FOR_APPROVAL, JourneyState.FAILED}
     ),
@@ -341,8 +361,13 @@ class StateMachine:
         message: str | None = None,
         metadata: dict[str, Any] | None = None,
         last_error: str | None = None,
+        session: Session | None = None,
     ) -> TransitionResult:
-        with self._session_factory.begin() as session:
+        # Data API operations can commit a business result with its transition.
+        transaction = (
+            nullcontext(session) if session is not None else self._session_factory.begin()
+        )
+        with transaction as session:
             # PostgreSQL holds this row lock until the event and state commit together.
             journey = session.execute(
                 select(Journey).where(Journey.id == journey_id).with_for_update()

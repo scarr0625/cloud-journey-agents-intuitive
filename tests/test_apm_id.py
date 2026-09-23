@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from orchestrator_agent.app.cloud_journey.apm import normalize_apm_id
+from journey_poc.cloud_journey.apm import normalize_apm_id
 
 
 @pytest.mark.parametrize(

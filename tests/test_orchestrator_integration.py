@@ -3,14 +3,62 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 from google.genai import types
 
-from orchestrator_agent.app.cloud_journey.capability import DURABLE_JOURNEY_TOOLS
-from orchestrator_agent.app.cloud_journey.identity import (
+from journey_poc.cloud_journey.capability import DURABLE_JOURNEY_TOOLS
+from journey_poc.cloud_journey.identity import (
     VERIFIED_USER_SUBJECT_KEY,
     verified_identity_state,
 )
-from orchestrator_agent.app import main
+from journey_poc import main
+from journey_sessions.persistence import PersistentSessionService
+
+
+@pytest.fixture(autouse=True)
+def isolated_session_database(tmp_path, monkeypatch):
+    service = PersistentSessionService(f"sqlite+aiosqlite:///{tmp_path / 'sessions.sqlite'}")
+    monkeypatch.setattr(main, "session_service", service)
+    monkeypatch.setattr(main.runner, "session_service", service)
+    monkeypatch.setattr(main.chat_runner, "session_service", service)
+    yield
+    service.close()
+
+
+def test_chat_assistant_has_only_read_only_status_tools():
+    assert {tool.__name__ for tool in main.chat_assistant.tools} == {
+        "get_journey_progress", "get_journey_progress_by_apm_id",
+    }
+
+
+def test_refreshing_verified_claims_keeps_conversation_history():
+    from google.adk.events import Event
+    old_state = verified_identity_state({"subject": "same-sub", "email": "old@example.com", "name": "Old"})
+    session = main._get_or_create_session("same-sub", uuid4().hex, initial_state=old_state)
+    main.session_service.append_event_sync(session, Event(
+        author="user", content=types.Content(role="user", parts=[types.Part(text="Previous turn")]),
+    ))
+    new_state = verified_identity_state({"subject": "same-sub", "email": "new@example.com", "name": "New"})
+    refreshed = main._get_or_create_session("same-sub", session.id, initial_state=new_state)
+    assert refreshed.state == new_state
+    assert refreshed.events[0].content.parts[0].text == "Previous turn"
+
+
+def test_chat_endpoint_uses_separate_application_sessions(monkeypatch):
+    class FakeRunner:
+        def run(self, **kwargs):
+            content = types.Content(role="model", parts=[types.Part(text="Awaiting MyAccess")])
+            yield SimpleNamespace(content=content, is_final_response=lambda: True)
+    monkeypatch.setattr(main, "chat_runner", FakeRunner())
+    monkeypatch.setattr(main, "OAUTH_CLIENT_ID", "")
+    response = main.chat_query(main.QueryRequest(query="Show progress"))
+    assert main.session_service.get_session_sync(
+        app_name=main.CHAT_APP_NAME, user_id="service-client", session_id=response.session_id,
+    ) is not None
+    assert main.session_service.get_session_sync(
+        app_name=main.APP_NAME, user_id="service-client", session_id=response.session_id,
+    ) is None
 
 
 def test_main_orchestrator_owns_durable_journey_tools() -> None:
