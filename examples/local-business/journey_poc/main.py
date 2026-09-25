@@ -38,7 +38,7 @@ from .cloud_journey.chat_status import CHAT_ASSISTANT_INSTRUCTION, CHAT_ASSISTAN
 from .cloud_journey.identity import verified_identity_state
 from .cloud_journey.state_machine import JourneyError
 from .cloud_journey.tools import ApmAccessDenied, get_service
-from journey_sessions.persistence import build_session_service
+from cloud_journey_agents.sessions.persistence import build_session_service
 
 APP_NAME = "orchestrator"
 MODEL = os.environ.get("ORCHESTRATOR_MODEL", "gemini-3.6-flash")

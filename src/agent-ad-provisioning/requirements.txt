@@ -1,4 +1,3 @@
-# Install from repository root. Shared packages are resolved from this checkout.
-./packages/journey-mcp
-./packages/journey-durability
+# Install from the repository root.
+./src[batch]
 ./src/agent-ad-provisioning

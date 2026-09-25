@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "agent-apm-validation"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["journey-mcp==0.1.0", "python-dotenv>=1,<2", "journey-durability==0.1.0"]
+dependencies = ["cloud-journey-agents[batch]==0.1.0"]
 
 [tool.setuptools]
 packages = ["agent_apm_validation"]

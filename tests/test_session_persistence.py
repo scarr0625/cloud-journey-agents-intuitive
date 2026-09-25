@@ -2,7 +2,7 @@ from google.adk.events import Event, EventActions
 from google.genai import types
 from sqlalchemy import create_engine, inspect
 
-from journey_sessions.persistence import PersistentSessionService
+from cloud_journey_agents.sessions.persistence import PersistentSessionService
 
 
 def test_real_adk_runner_persists_async_turns_across_session_service_restart(tmp_path):

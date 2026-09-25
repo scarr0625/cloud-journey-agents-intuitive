@@ -18,7 +18,7 @@ from .models import Journey, JourneyEvent, JourneyExternalDependency, JourneyOpe
 from .state_machine import Actor, JourneyNotFound, JourneyState, StateMachine
 
 
-from journey_durability.business import BusinessGateway, BusinessProgress
+from cloud_journey_agents.durability.contracts import BusinessGateway, BusinessProgress
 
 
 class LocalBusinessGateway:

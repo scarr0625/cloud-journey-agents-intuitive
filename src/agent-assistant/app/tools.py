@@ -1,17 +1,15 @@
 """The Assistant's entire model-visible business tool allowlist."""
 
 from google.adk.tools import ToolContext
-from journey_mcp.client import McpClient, McpError, READ_TOOLS
-from journey_mcp.identity import get_verified_identity, VerifiedIdentityRequired
-from journey_mcp.user_auth import current_user_token
+from cloud_journey_agents.mcp import McpClient, McpError, READ_TOOLS
+from cloud_journey_agents.identity import VerifiedIdentityRequired
+
+from .context import verified_user_token
 
 
 def _read(tool: str, arguments: dict, context: ToolContext) -> dict:
     try:
-        get_verified_identity(context.state, expected_subject=context.user_id)
-        token = current_user_token.get()
-        if not token:
-            raise VerifiedIdentityRequired()
+        token = verified_user_token(context)
         result = McpClient(READ_TOOLS).call(tool, arguments, user_token=token)
         if not isinstance(result, dict):
             raise McpError("Journey status must be a structured object")

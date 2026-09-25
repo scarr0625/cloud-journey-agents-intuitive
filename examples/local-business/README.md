@@ -6,8 +6,9 @@ external operations. It is excluded from all five production agent images.
 
 Run commands from the repository root after installing `pip install -e ".[test]"`.
 Use the root `.env.example` for local database configuration. `docker compose up -d`
-starts PostgreSQL and creates the three databases on a new volume. For existing
-volumes, `scripts/init_databases.sql` can add missing databases without deleting data.
+starts PostgreSQL and creates the three databases and schemas on a new volume.
+For existing volumes, follow [the migration guide](../../migrations/README.md)
+to apply the current baselines or review legacy upgrades without deleting data.
 
 ```powershell
 uvicorn journey_poc.main:app --port 8000

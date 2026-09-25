@@ -3,8 +3,8 @@ import json
 import httpx
 import pytest
 
-from journey_durability.mcp_gateway import McpBusinessGateway
-from journey_mcp.client import McpClient, McpError, READ_TOOLS
+from cloud_journey_agents.durability.mcp_gateway import McpBusinessGateway
+from cloud_journey_agents.mcp import McpClient, McpError, READ_TOOLS
 
 
 class FakeClient:
@@ -124,7 +124,8 @@ def test_read_only_mcp_client_rejects_writes_before_authentication_or_network(
 
 
 @pytest.mark.parametrize("tool_error", [False, True])
-def test_real_mcp_sdk_streamable_http_transport(monkeypatch, tool_error):
+@pytest.mark.parametrize("available", [False, True])
+def test_real_mcp_sdk_streamable_http_transport(monkeypatch, tool_error, available):
     # Exercise the actual SDK handshake and tool call without external services.
     original_client = httpx.AsyncClient
     requests = []
@@ -143,9 +144,11 @@ def test_real_mcp_sdk_streamable_http_transport(monkeypatch, tool_error):
             }
         elif method == "tools/list":
             result = {
-                "tools": [
-                    {"name": "get_journey_status", "inputSchema": {"type": "object"}}
-                ]
+                "tools": (
+                    [{"name": "get_journey_status", "inputSchema": {"type": "object"}}]
+                    if available
+                    else []
+                )
             }
         else:
             assert method == "tools/call"
@@ -170,7 +173,7 @@ def test_real_mcp_sdk_streamable_http_transport(monkeypatch, tool_error):
     monkeypatch.delenv("MCP_CLOUD_RUN_AUDIENCE", raising=False)
     monkeypatch.setenv("MCP_USER_AUTH_HEADER", "X-User-Authorization")
     client = McpClient(READ_TOOLS, url="https://mcp.test/mcp")
-    if tool_error:
+    if tool_error or not available:
         with pytest.raises(McpError):
             client.call(
                 "get_journey_status",
@@ -182,8 +185,12 @@ def test_real_mcp_sdk_streamable_http_transport(monkeypatch, tool_error):
             "get_journey_status", {"journey_id": "J-123"}, user_token="verified-token"
         )
         assert result["journey_state"] == "APM_VALIDATED"
-    assert any(
-        json.loads(request.content)["method"] == "tools/call" for request in requests
+    assert (
+        any(
+            json.loads(request.content)["method"] == "tools/call"
+            for request in requests
+        )
+        == available
     )
     assert all(
         request.headers["X-User-Authorization"] == "Bearer verified-token"

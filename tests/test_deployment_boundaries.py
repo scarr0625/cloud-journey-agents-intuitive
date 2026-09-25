@@ -8,25 +8,33 @@ import pytest
 @pytest.mark.parametrize(
     "module",
     [
-        "agent_apm_validation.main",
-        "agent_ad_provisioning.main",
-        "agent_app_factory.main",
-        "agent_assistant.main",
-        "agent_orchestrator.main",
+        "agent_apm_validation.server",
+        "agent_ad_provisioning.server",
+        "agent_app_factory.server",
+        "agent_assistant.server",
+        "agent_orchestrator.server",
     ],
 )
 def test_deployed_entry_points_import_without_business_database(module):
     # Even broken business configuration must not affect the agent deployments.
     script = f"""
-import os, importlib, sys
+import os, importlib, importlib.abc, sys
+class NoBatchModules(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in ('cloud_journey_agents.batch', 'cloud_journey_agents.batch_server'):
+            raise ImportError('The main repository owns its batch modules')
+sys.meta_path.insert(0, NoBatchModules())
 os.environ['DATABASE_URL'] = 'invalid://must-not-be-used'
 os.environ['CLOUD_SQL_INSTANCE'] = 'must-not-be-used'
+os.environ['DURABLE_DATABASE_URL'] = 'invalid://must-not-open-on-import'
 importlib.import_module({module!r})
 assert not any(name.startswith('journey_poc') for name in sys.modules)
-if {module!r} in ('agent_assistant.main', 'agent_orchestrator.main'):
-    assert not any(name.startswith('journey_durability') for name in sys.modules)
+assert 'cloud_journey_agents.journey_db' not in sys.modules
+assert not any(name.startswith('agent_') and name.split('.')[0] != {module!r}.split('.')[0] for name in sys.modules)
+if {module!r} in ('agent_assistant.server', 'agent_orchestrator.server'):
+    assert not any(name.startswith('cloud_journey_agents.durability') for name in sys.modules)
 else:
-    assert not any(name.startswith('journey_sessions') for name in sys.modules)
+    assert not any(name.startswith('cloud_journey_agents.sessions') for name in sys.modules)
 """
     subprocess.run(
         [sys.executable, "-c", script], check=True, capture_output=True, text=True
@@ -38,7 +46,7 @@ else:
 )
 def test_each_batch_image_has_its_own_fixed_identity(module):
     result = subprocess.run(
-        [sys.executable, "-m", f"{module}.main", "--help"],
+        [sys.executable, "-m", f"{module}.server", "--help"],
         check=True,
         capture_output=True,
         text=True,
@@ -50,7 +58,7 @@ def test_each_batch_image_has_its_own_fixed_identity(module):
 
 
 def test_durable_configuration_never_falls_back_to_business_database(monkeypatch):
-    from journey_durability.database import build_durable_engine
+    from cloud_journey_agents.durability.database import build_durable_engine
 
     monkeypatch.delenv("DURABLE_DATABASE_URL", raising=False)
     monkeypatch.delenv("DURABLE_CLOUD_SQL_INSTANCE", raising=False)
@@ -61,7 +69,7 @@ def test_durable_configuration_never_falls_back_to_business_database(monkeypatch
 
 def test_docker_contexts_package_only_their_own_agent_and_required_libraries():
     root = Path(__file__).resolve().parents[1]
-    folders = list((root / "src").iterdir())
+    folders = sorted((root / "src").glob("agent-*"))
     assert len(folders) == 5
     for folder in folders:
         dockerfile = (folder / "Dockerfile").read_text()
@@ -72,5 +80,12 @@ def test_docker_contexts_package_only_their_own_agent_and_required_libraries():
             if other != folder:
                 assert f"COPY src/{other.name} " not in dockerfile
         batch = folder.name not in {"agent-assistant", "agent-orchestrator"}
-        assert ("COPY packages/journey-durability " in dockerfile) == batch
-        assert ("COPY packages/journey-sessions " in dockerfile) != batch
+        assert "COPY src/pyproject.toml /build/cloud-journey-agents/pyproject.toml" in dockerfile
+        assert "COPY src/cloud_journey_agents /build/cloud-journey-agents/cloud_journey_agents" in dockerfile
+        assert "COPY src /" not in dockerfile
+        extra = "batch" if batch else "chat"
+        assert f"/build/cloud-journey-agents[{extra}]" in dockerfile
+        assert (
+            f"cloud-journey-agents[{extra}]==0.1.0"
+            in (folder / "pyproject.toml").read_text()
+        )

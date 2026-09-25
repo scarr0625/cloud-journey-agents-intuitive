@@ -7,10 +7,13 @@ from sqlalchemy import create_engine, event, func, inspect, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
-from journey_durability.runtime import BatchRuntime
+from cloud_journey_agents.durability.runtime import BatchRuntime
+from agent_apm_validation.job import WORKFLOW as APM_WORKFLOW
+from agent_ad_provisioning.job import WORKFLOW as AD_WORKFLOW
+from agent_app_factory.job import WORKFLOW as APP_FACTORY_WORKFLOW
 from journey_poc.cloud_journey.business_operations import LocalBusinessGateway
-from journey_durability.checkpoints import CheckpointStore, OperationBusy
-from journey_durability.models import (
+from cloud_journey_agents.durability.checkpoints import CheckpointStore, OperationBusy
+from cloud_journey_agents.durability.models import (
     AgentExecution,
     BatchAgent,
     CheckpointEvent,
@@ -70,9 +73,9 @@ def test_jobs_resume_same_ad_request_after_restart_and_stop_at_readiness(
 ):
     journey_id = new_journey(service)
     runtime = BatchRuntime(store, business)
-    apm = runtime.run(BatchAgent.APM_VALIDATION, journey_id, "workflow-1")
+    apm = runtime.run(APM_WORKFLOW, journey_id, "workflow-1")
     submitted = runtime.run(
-        BatchAgent.AD_PROVISIONING, journey_id, "workflow-1", mode="submit"
+        AD_WORKFLOW, journey_id, "workflow-1", mode="submit"
     )
     assert apm.checkpoint_status == "COMPLETED"
     assert submitted.checkpoint_status == "WAITING"
@@ -92,12 +95,12 @@ def test_jobs_resume_same_ad_request_after_restart_and_stop_at_readiness(
     try:
         restarted = BatchRuntime(restarted_store, restarted_business)
         pending = restarted.run(
-            BatchAgent.AD_PROVISIONING, journey_id, "workflow-2", mode="poll"
+            AD_WORKFLOW, journey_id, "workflow-2", mode="poll"
         )
         complete = restarted.run(
-            BatchAgent.AD_PROVISIONING, journey_id, "workflow-3", mode="poll"
+            AD_WORKFLOW, journey_id, "workflow-3", mode="poll"
         )
-        ready = restarted.run(BatchAgent.APP_FACTORY_HELPER, journey_id, "workflow-3")
+        ready = restarted.run(APP_FACTORY_WORKFLOW, journey_id, "workflow-3")
         assert pending.checkpoint_status == "WAITING"
         assert complete.checkpoint_status == ready.checkpoint_status == "COMPLETED"
         assert (
@@ -139,7 +142,7 @@ def test_business_commit_before_checkpoint_failure_does_not_resubmit(
 ):
     journey_id = new_journey(service)
     runtime = BatchRuntime(store, business)
-    runtime.run(BatchAgent.APM_VALIDATION, journey_id, "run")
+    runtime.run(APM_WORKFLOW, journey_id, "run")
     original_save = store.save
     failed = False
 
@@ -152,12 +155,12 @@ def test_business_commit_before_checkpoint_failure_does_not_resubmit(
 
     monkeypatch.setattr(store, "save", fail_once)
     with pytest.raises(RuntimeError, match="interrupted"):
-        runtime.run(BatchAgent.AD_PROVISIONING, journey_id, "run", mode="submit")
+        runtime.run(AD_WORKFLOW, journey_id, "run", mode="submit")
     monkeypatch.setattr(
         business, "submit_ad", lambda *_args: pytest.fail("duplicate submission")
     )
     recovered = runtime.run(
-        BatchAgent.AD_PROVISIONING, journey_id, "retry", mode="poll"
+        AD_WORKFLOW, journey_id, "retry", mode="poll"
     )
     assert recovered.checkpoint_status == "WAITING"
     assert recovered.external_reference
@@ -178,8 +181,8 @@ def test_poll_failure_retains_reference_and_recovers(
 ):
     journey_id = new_journey(service)
     runtime = BatchRuntime(store, business)
-    runtime.run(BatchAgent.APM_VALIDATION, journey_id, "run")
-    submitted = runtime.run(BatchAgent.AD_PROVISIONING, journey_id, "run")
+    runtime.run(APM_WORKFLOW, journey_id, "run")
+    submitted = runtime.run(AD_WORKFLOW, journey_id, "run")
     original = business.poll_ad
 
     def fail(*_args):
@@ -187,7 +190,7 @@ def test_poll_failure_retains_reference_and_recovers(
 
     monkeypatch.setattr(business, "poll_ad", fail)
     with pytest.raises(RuntimeError, match="unavailable"):
-        runtime.run(BatchAgent.AD_PROVISIONING, journey_id, "run2", mode="poll")
+        runtime.run(AD_WORKFLOW, journey_id, "run2", mode="poll")
     with store.session_factory() as session:
         checkpoint = session.get(OperationCheckpoint, submitted.checkpoint_id)
         assert checkpoint.checkpoint_status == "FAILED"
@@ -195,7 +198,7 @@ def test_poll_failure_retains_reference_and_recovers(
         assert checkpoint.external_reference == submitted.external_reference
         assert checkpoint.last_error == "MyAccess unavailable"
     monkeypatch.setattr(business, "poll_ad", original)
-    recovered = runtime.run(BatchAgent.AD_PROVISIONING, journey_id, "run3", mode="poll")
+    recovered = runtime.run(AD_WORKFLOW, journey_id, "run3", mode="poll")
     assert recovered.external_reference == submitted.external_reference
 
 
@@ -231,10 +234,10 @@ def test_validation_error_is_a_completed_operation(service, business, store):
     journey_id = new_journey(service, inventory=False)
     business.pending_polls = 0
     runtime = BatchRuntime(store, business)
-    runtime.run(BatchAgent.APM_VALIDATION, journey_id, "run")
-    runtime.run(BatchAgent.AD_PROVISIONING, journey_id, "run", mode="submit")
-    runtime.run(BatchAgent.AD_PROVISIONING, journey_id, "run", mode="poll")
-    result = runtime.run(BatchAgent.APP_FACTORY_HELPER, journey_id, "run")
+    runtime.run(APM_WORKFLOW, journey_id, "run")
+    runtime.run(AD_WORKFLOW, journey_id, "run", mode="submit")
+    runtime.run(AD_WORKFLOW, journey_id, "run", mode="poll")
+    result = runtime.run(APP_FACTORY_WORKFLOW, journey_id, "run")
     assert result.checkpoint_status == "COMPLETED"
     status = service.status(journey_id)
     assert status["current_state"] == "APP_FACTORY_VALIDATION_ERROR"
@@ -250,7 +253,7 @@ def test_store_boundaries_status_reads_and_batch_ownership(
     service, business, store, engine, durable_engine
 ):
     journey_id = new_journey(service)
-    BatchRuntime(store, business).run(BatchAgent.APM_VALIDATION, journey_id, "run")
+    BatchRuntime(store, business).run(APM_WORKFLOW, journey_id, "run")
     with store.session_factory() as session:
         before = session.scalar(select(func.count()).select_from(CheckpointEvent))
     assert (
@@ -281,11 +284,11 @@ def test_store_boundaries_status_reads_and_batch_ownership(
 def test_completed_work_is_not_repeated(service, business, store, monkeypatch):
     journey_id = new_journey(service)
     runtime = BatchRuntime(store, business)
-    first = runtime.run(BatchAgent.APM_VALIDATION, journey_id, "run1")
+    first = runtime.run(APM_WORKFLOW, journey_id, "run1")
     monkeypatch.setattr(
         business, "validate_apm", lambda *_args: pytest.fail("repeated validation")
     )
-    second = runtime.run(BatchAgent.APM_VALIDATION, journey_id, "run2")
+    second = runtime.run(APM_WORKFLOW, journey_id, "run2")
     assert first.checkpoint_id == second.checkpoint_id
     assert first.execution_id != second.execution_id
 
@@ -296,7 +299,7 @@ def test_poll_without_submission_fails_without_creating_external_request(
     journey_id = new_journey(service)
     with pytest.raises(ValueError, match="saved MyAccess"):
         BatchRuntime(store, business).run(
-            BatchAgent.AD_PROVISIONING, journey_id, "run", mode="poll"
+            AD_WORKFLOW, journey_id, "run", mode="poll"
         )
     with session_factory() as session:
         assert (
@@ -333,7 +336,7 @@ def test_hard_crash_after_submission_recovers_from_business_record(
 ):
     journey_id = new_journey(service)
     runtime = BatchRuntime(store, business)
-    runtime.run(BatchAgent.APM_VALIDATION, journey_id, "run")
+    runtime.run(APM_WORKFLOW, journey_id, "run")
     original = business.submit_ad
 
     def commit_then_crash(*args):
@@ -342,7 +345,7 @@ def test_hard_crash_after_submission_recovers_from_business_record(
 
     monkeypatch.setattr(business, "submit_ad", commit_then_crash)
     with pytest.raises(SystemExit):
-        runtime.run(BatchAgent.AD_PROVISIONING, journey_id, "crashed")
+        runtime.run(AD_WORKFLOW, journey_id, "crashed")
     with store.session_factory.begin() as session:
         session.execute(
             update(OperationCheckpoint)
@@ -353,7 +356,7 @@ def test_hard_crash_after_submission_recovers_from_business_record(
         business, "submit_ad", lambda *_args: pytest.fail("duplicate external request")
     )
     recovered = runtime.run(
-        BatchAgent.AD_PROVISIONING, journey_id, "restarted", mode="poll"
+        AD_WORKFLOW, journey_id, "restarted", mode="poll"
     )
     assert recovered.checkpoint_status == "WAITING"
     assert recovered.external_reference
@@ -396,11 +399,11 @@ def test_batch_transitions_do_not_allow_interactive_resume_without_approval(
 ):
     journey_id = new_journey(service)
     runtime = BatchRuntime(store, business)
-    runtime.run(BatchAgent.APM_VALIDATION, journey_id, "run")
+    runtime.run(APM_WORKFLOW, journey_id, "run")
     with pytest.raises(InvalidTransition):
         service.resume_after_approval(journey_id)
     assert service.status(journey_id)["current_state"] == "APM_VALIDATED"
-    runtime.run(BatchAgent.AD_PROVISIONING, journey_id, "run", mode="submit")
+    runtime.run(AD_WORKFLOW, journey_id, "run", mode="submit")
     with pytest.raises(InvalidTransition):
         service.resume_after_approval(journey_id)
     assert service.status(journey_id)["current_state"] == "PROVISIONING_AGENT_IDENTITY"

@@ -1,0 +1,117 @@
+# Three independent state databases
+
+These scripts target PostgreSQL 16 (also the local Compose version). Each state
+store has its own database; Journey IDs in the durable database are logical
+references, not cross-database foreign keys.
+
+| Directory | Default database | Contents | Runtime consumer |
+| --- | --- | --- | --- |
+| `business-state/` | `cloud-journey-db` (Journey DB) | Journeys, group authorization, business audit, operation results, external dependencies | Client Data API; optional local business simulator |
+| `durable-state/` | `durable-state-db` | `agent_execution`, `operation_checkpoint`, `checkpoint_event` | The three batch agents |
+| `session-state/` | `session-db` | ADK `sessions`, `events`, `app_states`, `user_states`, `adk_internal_metadata` | Assistant and Orchestrator |
+
+## Create all three databases and schemas
+
+Run from the repository root with `psql`, using a migration identity that can
+create databases and owns their schemas. Use a password prompt, `.pgpass`, or your
+existing connection configuration. Do not wrap the bootstrap in `--single-transaction`:
+PostgreSQL cannot run `CREATE DATABASE` in a transaction.
+
+```powershell
+psql -X -h 127.0.0.1 -U journey -d postgres -f migrations/bootstrap.sql
+```
+
+The default database names match the existing environment examples. If you want
+the business database named `journey-db`, override it explicitly and update
+`DATABASE_URL`/`DB_NAME` in its consumer:
+
+```powershell
+psql -X -h 127.0.0.1 -U journey -d postgres -v business_db=journey-db -f migrations/bootstrap.sql
+```
+
+`durable_db` and `session_db` can also be overridden. All three names must differ.
+`000_create_databases.sql` creates only missing databases, owned by the connection
+user. `bootstrap.sql` then connects to each database and runs that directory's
+`apply.sql`. SQL errors stop the entire run, including nested scripts, through
+[`ON_ERROR_STOP`](https://www.postgresql.org/docs/16/app-psql.html#APP-PSQL-VARIABLES).
+Each numbered schema file has its own
+transaction; the bootstrap is not atomic across databases. If a later database
+fails, fix the error and rerun against the current baselines.
+
+The bootstrap preserves existing databases and records. It is a current-schema
+bootstrap, not a general migration/repair tool for arbitrary existing schemas.
+It creates no application users, demo group memberships, or sample Journeys.
+
+## Apply schemas to databases created separately
+
+When Cloud SQL or your database team creates the databases, use each entry point
+with that database's migration owner:
+
+```powershell
+psql -X -h DB_HOST -U MIGRATION_OWNER -d cloud-journey-db -f migrations/business-state/apply.sql
+psql -X -h DB_HOST -U MIGRATION_OWNER -d durable-state-db -f migrations/durable-state/apply.sql
+psql -X -h DB_HOST -U MIGRATION_OWNER -d session-db -f migrations/session-state/apply.sql
+```
+
+Schemas live in `public`. Give runtime identities `CONNECT`, schema `USAGE`, and
+the table/sequence data privileges needed in their own database. Keep schema
+ownership and database creation with the migration identity. Chat identities
+should not have checkpoint/business database access; batch identities should not
+have session/business database access. The production business schema remains
+owned by the client's Data API; use its existing migration pipeline for that DB.
+
+## Business schema and historical migrations
+
+For a **new database**, `business-state/apply.sql` runs:
+
+1. `000_initial_schema.sql`: the current core tables, including normalized groups
+   and Journey ownership.
+2. `005_business_operation_progress.sql`: business operation projections and
+   external provisioning references.
+
+Files `001`–`004` are retained for the previous PoC database. They backfill owners,
+seed example access groups, rename historical states, and normalize old APM IDs.
+They are deliberately excluded from new-database initialization. For a legacy
+upgrade, review its current schema and identity mappings, then apply the missing
+numbered migrations in order using the existing migration history. In particular,
+review the demo identities and group assignments in `002` and `004` before using
+them outside the PoC. Do not automatically replay them on production authorization
+data. No destructive refresh/normalization scripts under `scripts/` are invoked.
+
+## Session schema compatibility
+
+`session-state/000_adk_sessions.sql` matches **google-adk 2.9.2**, schema **v1**.
+Both Python dependency manifests pin that release so an unattended dependency
+upgrade cannot silently change the required session schema. The schema check in
+`tests/test_migration_schemas.py` compares the checked-in table/index DDL to ADK's
+PostgreSQL ORM definitions; review the migration and that test when upgrading ADK.
+
+ADK session state and event payloads use JSONB. Its timestamps are naive UTC
+(`TIMESTAMP WITHOUT TIME ZONE`), matching ADK's serializer. This differs from the
+business and durable tables, which use timestamps with time zones.
+
+The migration writes `adk_internal_metadata.schema_version = '1'` through the
+`key`/`value` metadata row. It refuses unknown versions and existing unversioned
+session tables; it never relabels legacy Pickle payloads as JSON. Migrate an
+existing v0 session database with the ADK migration tooling before applying this
+baseline. ADK still checks tables/indexes on first use; with this schema already
+present, runtime identities do not need schema-creation privileges.
+
+## Local Docker Compose
+
+```powershell
+docker compose up -d
+```
+
+On a **new volume**, PostgreSQL's initialization hook calls `bootstrap.sql` and
+creates all three schemas. Docker does not rerun initialization hooks for existing
+volumes. To apply the baselines to an existing local instance without deleting its
+volume:
+
+```powershell
+docker compose exec postgres psql -X -U journey -d postgres -f /migrations/bootstrap.sql
+```
+
+For a legacy local database, review the historical business/session upgrade notes
+above first. The existing `scripts/init_databases.sql` is a compatibility wrapper
+around the same bootstrap.

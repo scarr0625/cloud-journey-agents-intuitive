@@ -1,4 +1,0 @@
-# Install from repository root. Shared packages are resolved from this checkout.
-./packages/journey-mcp
-./packages/journey-durability
-./src/agent-app-factory

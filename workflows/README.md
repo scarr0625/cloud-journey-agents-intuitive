@@ -1,5 +1,15 @@
 # Workflow ownership
 
+This directory is **optional local tooling**, not a required agent runtime or a
+deployable Google Workflows definition. The root development package includes it
+for the local demo and `tests/test_batch_workflow.py`; no agent image includes or
+imports it. Keep it if you want to run the sequence locally. Removing it also
+requires removing the root package entry, its tests, and the local-demo commands.
+
+Production still needs a coordinator to sequence the independently deployed jobs
+and schedule subsequent AD polls. Use the client's existing orchestrator or a
+Google Workflows deployment; this local script is not needed for that deployment.
+
 Production Google Workflows starts the three independently deployed Cloud Run
 Jobs and waits for their executions. Jobs do not invoke one another.
 

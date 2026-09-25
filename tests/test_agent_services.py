@@ -3,10 +3,10 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from agent_assistant import main as assistant, tools as assistant_tools
-from agent_orchestrator import main as orchestrator
-from journey_mcp.identity import verified_identity_state
-from journey_mcp.user_auth import current_user_token, authenticated_user
+from agent_assistant import agent as assistant, tools as assistant_tools
+from agent_orchestrator import agent as orchestrator, tools as orchestrator_tools
+from cloud_journey_agents.identity import verified_identity_state
+from cloud_journey_agents.identity import current_user_token, authenticated_user
 
 
 def test_http_agent_tool_boundaries():
@@ -35,10 +35,10 @@ def test_orchestrator_preserves_downstream_session_without_storing_token(monkeyp
             request=httpx.Request("POST", url),
         )
 
-    monkeypatch.setattr(orchestrator.httpx, "post", post)
+    monkeypatch.setattr(orchestrator_tools.httpx, "post", post)
     token = current_user_token.set("ephemeral-token")
     try:
-        result = orchestrator.query_assistant("Progress?", context)
+        result = orchestrator_tools.query_assistant("Progress?", context)
     finally:
         current_user_token.reset(token)
     assert result == {"ok": True, "answer": "Waiting"}
@@ -79,7 +79,7 @@ def test_assistant_requires_request_identity_and_calls_only_authorized_status(
 
 
 def test_authentication_context_is_cleared_even_when_processing_fails(monkeypatch):
-    from journey_mcp import user_auth
+    from cloud_journey_agents import identity as user_auth
 
     monkeypatch.setattr(
         user_auth, "verify_user", lambda _: ({"subject": "user-1"}, "ephemeral-token")
@@ -97,7 +97,7 @@ def test_real_runner_keeps_request_token_and_persists_only_conversation(
     from google.adk.agents import BaseAgent
     from google.adk.events import Event
     from google.genai import types
-    from journey_sessions.conversation import ConversationRuntime, QueryRequest
+    from cloud_journey_agents.sessions.conversation import ConversationRuntime, QueryRequest
 
     seen = []
 

@@ -67,7 +67,7 @@ databases to an existing local volume without deleting its contents:
 Get-Content scripts/init_databases.sql | docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U journey -d postgres
 ```
 
-Run `migrations/business/005_business_operation_progress.sql` against
+Run `migrations/business-state/005_business_operation_progress.sql` against
 the business database and
 `migrations/durable-state/000_execution_checkpoints.sql` against
 the checkpoint database. For a fresh business database, first run migrations
@@ -390,11 +390,11 @@ This gives the intended behavior:
   concurrent requests.
 
 For an existing database, run
-[`migrations/business/001_apm_uniqueness_and_ownership.sql`](../../migrations/business/001_apm_uniqueness_and_ownership.sql),
-then [`migrations/business/002_group_apm_authorization.sql`](../../migrations/business/002_group_apm_authorization.sql),
-then [`migrations/business/003_architecture_aligned_states.sql`](../../migrations/business/003_architecture_aligned_states.sql),
-[`migrations/business/004_canonical_apm_ids.sql`](../../migrations/business/004_canonical_apm_ids.sql),
-and finally [`migrations/business/005_business_operation_progress.sql`](../../migrations/business/005_business_operation_progress.sql)
+[`migrations/business-state/001_apm_uniqueness_and_ownership.sql`](../../migrations/business-state/001_apm_uniqueness_and_ownership.sql),
+then [`migrations/business-state/002_group_apm_authorization.sql`](../../migrations/business-state/002_group_apm_authorization.sql),
+then [`migrations/business-state/003_architecture_aligned_states.sql`](../../migrations/business-state/003_architecture_aligned_states.sql),
+[`migrations/business-state/004_canonical_apm_ids.sql`](../../migrations/business-state/004_canonical_apm_ids.sql),
+and finally [`migrations/business-state/005_business_operation_progress.sql`](../../migrations/business-state/005_business_operation_progress.sql)
 before starting this version. The legacy `apm_group_access` table is no longer
 read or seeded by the application.
 

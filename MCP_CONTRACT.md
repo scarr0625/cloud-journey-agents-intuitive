@@ -48,4 +48,7 @@ request-scoped, never stored in checkpoints or conversation state.
 The client transport uses the MCP Python SDK v1 Streamable HTTP implementation.
 It supports structuredContent or a single JSON text result. For a different
 transport, token exchange, tool naming, or response envelope, adapt
-packages/journey-mcp and journey_durability/mcp_gateway.py centrally.
+`src/cloud_journey_agents/mcp.py` and the `McpBusinessGateway` in
+`src/cloud_journey_agents/durability/mcp_gateway.py` centrally. `guardrails.py` owns the tool
+allowlists and read argument checks. The transport verifies the requested tool
+is advertised by MCP before calling it; missing tools fail closed.

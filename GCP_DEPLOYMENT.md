@@ -17,6 +17,10 @@ docker build -f src/agent-orchestrator/Dockerfile -t REGION-docker.pkg.dev/PROJE
 Use the same context (`.`) in the client's Cloud Build pipeline. The Dockerfile
 path selects the agent, while COPY paths are relative to the repository root.
 Shared-library changes require rebuilding each image that consumes the library.
+The shared distribution is defined by `src/pyproject.toml`, with its modules in
+`src/cloud_journey_agents/`. Batch images install its `batch` extra; HTTP
+chat images install its `chat` extra. The shared package is never deployed as a
+network service.
 
 ## Batch jobs
 
@@ -34,7 +38,8 @@ argument. Give each job its own workload identity and corresponding MCP permissi
   `MCP_BEARER_TOKEN` is an application credential supplied through a secret.
 - Do not configure Business DB or Session DB connections on batch jobs.
 
-Apply `migrations/durable-state/000_execution_checkpoints.sql` once through your
+Use [migrations/README.md](migrations/README.md) to initialize the three separate
+state databases. Apply `migrations/durable-state/apply.sql` through your
 migration pipeline. Grant batch database identities the data privileges needed
 for checkpoint transactions. Deployed jobs never create tables.
 
@@ -55,13 +60,31 @@ Workflows passes `--journey-id` and `--workflow-run-id` to each execution. AD al
 accepts `--mode submit` or `--mode poll`. See [workflows/README.md](workflows/README.md)
 for ordering and the distinction between successful job execution and pending work.
 
+### Optional batch HTTP interface
+
+The original `/health` and `POST /v1/run` service interface is available on each
+batch agent using the same workflow and checkpoint runtime. To deploy an existing
+batch image as a service, override its Job entry point with command `uvicorn` and
+arguments `agent_ad_provisioning.server:app,--host,0.0.0.0,--port,8080` (substitute
+the selected agent's Python module). Keep Cloud Run authentication enabled and
+grant only the workflow caller invoker access. Use the same batch service account,
+MCP allowlist, Durable State DB settings, and timeout below the checkpoint lease.
+
+Send `journey_id`, `workflow_run_id`, and optionally `mode` in the JSON request.
+The endpoint returns the CLI result object, including `successful` and
+`checkpoint_status`; HTTP 200 can therefore mean WAITING or a negative business
+outcome. The caller must inspect both fields before advancing the workflow.
+An active operation lease returns HTTP 409. The request cannot select an agent.
+
 ## HTTP services
 
 Deploy Assistant and Orchestrator as separate authenticated Cloud Run services.
 Both listen on port 8080. Configure `SESSION_DATABASE_URL` to session-db and inject
 verified Google user authentication configuration (`OAUTH_CLIENT_ID` and optional
-`ALLOWED_USER_DOMAINS`). ADK manages its own session tables; apply the client's
-chosen session-schema permissions/migration policy.
+`ALLOWED_USER_DOMAINS`). Apply `migrations/session-state/apply.sql` to Session DB
+through the migration identity before deploying. It creates ADK v1 tables and the
+version marker for the pinned `google-adk==2.9.2` dependency. Runtime identities
+need access to their session tables and metadata; the migration identity owns DDL.
 
 Configure `ASSISTANT_URL` and `ASSISTANT_CLOUD_RUN_AUDIENCE` on the orchestrator.
 Grant its workload identity Cloud Run invoker access to the Assistant. It sends

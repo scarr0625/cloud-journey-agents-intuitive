@@ -17,9 +17,9 @@ def run_job(
     # Each invocation runs in a fresh process. The workflow itself has no
     # checkpoint connection, and an individual job never launches another job.
     modules = {
-        "apm-validation-agent": "agent_apm_validation.main",
-        "ad-provisioning-agent": "agent_ad_provisioning.main",
-        "app-factory-helper-agent": "agent_app_factory.main",
+        "apm-validation-agent": "agent_apm_validation.server",
+        "ad-provisioning-agent": "agent_ad_provisioning.server",
+        "app-factory-helper-agent": "agent_app_factory.server",
     }
     if os.getenv("JOURNEY_WORKFLOW_BACKEND", "mcp") == "local":
         command = [
