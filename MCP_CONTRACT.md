@@ -1,5 +1,8 @@
 # Required client MCP business contract
 
+For the Schwab-facing implementation request, existing-tool reuse assessment, and
+per-tool details, see [SCHWAB_MCP_TOOL_REQUEST.md](SCHWAB_MCP_TOOL_REQUEST.md).
+
 These tool names are the expected integration surface implemented by the adapter;
 they are not assertions about the client's currently installed server. Map them
 to the client implementation before deploying. All business writes go through
