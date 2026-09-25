@@ -1,4 +1,13 @@
-"""Environment configuration shared by agent entry points and infrastructure."""
+"""Common environment access for agent entry points and infrastructure.
+
+Entry points call load_config() to load local .env defaults without
+replacing values supplied by the deployment. Consumers then read settings
+or require a nonempty value when their operation needs it.
+
+The local database access gate also lives here so every caller uses the
+same opt-in rule and Cloud Run exclusion. Importing this module alone
+does not load a .env file or validate every workload's configuration.
+"""
 
 import os
 

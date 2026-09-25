@@ -1,4 +1,15 @@
-"""Typed callers use this transport; each caller supplies an explicit tool allowlist."""
+"""Call the private MCP service through an explicit per-caller tool allowlist.
+
+A call validates its tool and any chat-read arguments, prepares workload
+and delegated-user headers, and initializes the MCP transport. It confirms
+that the requested tool is advertised before invoking business behavior.
+Missing tools, transport failures, and unsuccessful results raise McpError.
+
+Synchronous tools run the async SDK in a separate thread, allowing callers
+that already have an event loop. The transport returns decoded results;
+business adapters interpret their meaning. Client construction performs
+no network request, and MCP failure never triggers direct database access.
+"""
 
 from __future__ import annotations
 

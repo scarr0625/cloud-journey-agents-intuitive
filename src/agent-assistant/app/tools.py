@@ -1,4 +1,14 @@
-"""The Assistant's entire model-visible business tool allowlist."""
+"""Expose the Assistant's two model-visible Journey status lookups.
+
+A tool first obtains verified request identity, then calls private MCP
+with the shared read-only allowlist and the delegated user token. Results
+must be structured objects; identity or MCP failures become explicit tool
+error responses for the model to report.
+
+STATUS_TOOLS is the complete tool list installed by agent.py. It includes
+lookups by Journey ID and APM ID, with no business writes or direct SQL
+fallback. Authoritative data and authorization remain with the MCP service.
+"""
 
 from google.adk.tools import ToolContext
 from cloud_journey_agents.mcp import McpClient, McpError, READ_TOOLS

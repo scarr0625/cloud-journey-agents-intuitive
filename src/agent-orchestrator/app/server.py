@@ -1,4 +1,14 @@
-"""Orchestrator HTTP server; composition and session wiring live in their own modules."""
+"""HTTP entry point for authenticated Orchestrator conversations.
+
+Uvicorn serves health routes and POST /v1/query. Each query verifies the
+delegated sign-in token, establishes request-scoped identity, and invokes
+the Orchestrator's persistent conversation runtime. Authentication failures
+are returned as HTTP 401.
+
+The runtime is created lazily through sessions.py. Routing to the Assistant
+happens through the agent's tool during the turn, keeping HTTP validation,
+conversation persistence, and downstream delegation in separate modules.
+"""
 
 from . import settings
 

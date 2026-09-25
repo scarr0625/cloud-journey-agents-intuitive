@@ -1,4 +1,15 @@
-"""Batch execution records; this metadata belongs only in durable-state-db."""
+"""SQLAlchemy schema and state vocabulary for the Durable State DB.
+
+AgentExecution records each invocation, OperationCheckpoint retains the
+latest progress for a Journey operation, and CheckpointEvent records its
+saved state changes. Constraints identify supported batch agents and
+checkpoint statuses; ownership and version fields support lease checks.
+
+Journey IDs are logical references to business data in a separate database.
+These models contain execution state rather than the authoritative Journey
+lifecycle or chat history. Keep their schema aligned with the migration
+under migrations/durable-state/ when changing persistence fields.
+"""
 
 from __future__ import annotations
 

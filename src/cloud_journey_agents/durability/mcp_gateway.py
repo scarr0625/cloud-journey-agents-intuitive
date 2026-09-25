@@ -1,4 +1,15 @@
-"""Optional adapter for this repository's private MCP business contract."""
+"""Adapt this repository's private MCP business contract to durable progress.
+
+The gateway reads persisted operation outcomes and invokes the narrow
+APM, AD, or App Factory tools allowed for the agent. Returned Journey and
+operation IDs must match the request, and progress must include a saved
+result reference. AD polling must retain its original external request ID.
+
+Business outcomes are mapped to checkpoint stages, waiting/completed
+statuses, and a separate success flag. This adapter is optional: a main
+repo with a different MCP interface can inject a BusinessGateway through
+business= while reusing the checkpoint runtime unchanged.
+"""
 
 from .contracts import BusinessProgress
 from .models import BatchAgent

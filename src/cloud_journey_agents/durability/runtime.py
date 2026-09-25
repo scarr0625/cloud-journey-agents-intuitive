@@ -1,4 +1,15 @@
-"""Durable execution and recovery, independent of the shared batch wrappers."""
+"""Resume agent business steps through durable checkpoint ownership.
+
+Each invocation claims its operation, then reads the persisted business
+outcome before selecting a step. That reconciliation recovers the case
+where business work committed but the worker stopped before its checkpoint
+save. Existing AD request and result references survive subsequent runs.
+
+BatchRuntime coordinates step execution, checkpoint updates, and lease
+release. execute_job() builds the database resources and disposes its
+engine on exit. Callers can inject business=; otherwise the optional MCP
+gateway is loaded. Neither path requires batch.py or batch_server.py.
+"""
 
 from __future__ import annotations
 

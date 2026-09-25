@@ -1,4 +1,15 @@
-"""Transactional checkpoint storage, imported by batch jobs only."""
+"""Transactional ownership and persistence for durable batch operations.
+
+Each Journey and operation key has one reusable checkpoint, while every
+invocation receives a new execution record. Claiming an operation takes a
+bounded lease; an active owner blocks concurrent work, and an expired
+lease lets a later invocation recover an interrupted execution.
+
+Saves check the execution owner, version, and lease before updating state
+and recording an event. These checks prevent a stale worker from replacing
+a newer owner's progress. Finishing releases the lease and records the
+invocation result; the operation itself may remain WAITING for a later poll.
+"""
 
 from __future__ import annotations
 

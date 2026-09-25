@@ -1,4 +1,14 @@
-"""Shared identifier validation and explicit tool/SQL read boundaries."""
+"""Shared validation rules for identifiers, MCP calls, and local SQL reads.
+
+Chat tools accept one Journey or APM lookup at a time. Batch identities
+receive explicit tool allowlists for their own business operations. These
+checks run before transport so requests outside those contracts fail early.
+
+The SQL helper accepts structured SELECT statements and rejects write
+constructs, including write CTEs. journey_db.py additionally enforces a
+read-only database transaction because SQL shape alone cannot establish
+that every called database function is free of side effects.
+"""
 
 import re
 

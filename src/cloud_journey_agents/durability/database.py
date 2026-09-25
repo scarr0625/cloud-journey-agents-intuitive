@@ -1,4 +1,15 @@
-"""Lazy Durable State DB configuration with no business database imports."""
+"""Build database resources for durable checkpoints from DURABLE_* settings.
+
+Jobs can use an explicit database URL or a Cloud SQL connector with
+password or IAM authentication. This module creates SQLAlchemy engines
+and session factories on demand; importing it opens no connection.
+
+Only the Durable State DB belongs here. There is no fallback to the
+business or conversation database when configuration is missing. The
+runtime disposes its engine after each invocation, and connector shutdown
+is registered for process exit. init_durable_db() is for local setup;
+deployed tables are created by the centrally applied migration.
+"""
 
 import atexit
 

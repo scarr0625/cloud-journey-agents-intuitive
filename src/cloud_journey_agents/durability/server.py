@@ -1,4 +1,18 @@
-"""Optional durable CLI/HTTP entry points, independent of batch_server.py."""
+"""Expose one durable invocation as either a CLI job or an HTTP service.
+
+A job invocation runs once, emits a JSON result, and exits. A service
+deployment instead uses Uvicorn to serve the FastAPI app on its configured
+port; constructing the app here does not itself open a listening socket.
+Health routes are available before any batch operation is requested.
+
+POST /v1/run and the CLI both call the agent's durable executor, keeping
+recovery behavior consistent across deployment modes. A busy operation
+becomes HTTP 409. The CLI exits with code 2 for a negative business result;
+exit 0 can still mean WAITING and require a later invocation.
+
+Cloud Run IAM protects the service endpoint. This optional adapter is part
+of the durability copy set and does not import the main repo's batch server.
+"""
 
 import argparse
 from dataclasses import asdict

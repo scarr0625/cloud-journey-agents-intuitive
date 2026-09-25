@@ -1,4 +1,13 @@
-"""JSON logs go to stderr, leaving batch stdout for its single result object."""
+"""Structured JSON logging for the shared agent infrastructure.
+
+Each record includes a timestamp, severity, logger name, and message.
+Callers attach operation-specific values through journey_fields so batch
+and conversation events can be correlated without parsing message text.
+
+The configured handler writes to stderr, leaving batch stdout available
+for its single JSON result. Repeated configuration reuses an existing
+handler on the shared logger instead of emitting each record twice.
+"""
 
 from datetime import datetime, timezone
 import json

@@ -1,4 +1,13 @@
-"""Explicitly enabled local business reads; never a deployed chat fallback."""
+"""Explicit local-development access to read-only Journey business data.
+
+A developer supplies an engine and a structured SELECT with the appropriate
+authorization filters. The helper checks the shared SQL guardrail, applies
+database-level read-only protection, and returns rows as dictionaries.
+
+Access requires ALLOW_LOCAL_DB_READS and is disabled on Cloud Run. Deployed
+agents obtain business data through MCP; they do not use this helper when
+MCP fails. This module owns neither business models nor connection setup.
+"""
 
 from .config import local_database_reads_enabled
 from .guardrails import GuardrailError, require_read_only_statement

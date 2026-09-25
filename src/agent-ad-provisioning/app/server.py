@@ -1,4 +1,15 @@
-"""HTTP and CLI entry point for the AD provisioning agent."""
+"""HTTP and CLI entry point for the AD Provisioning agent.
+
+Running python -m agent_ad_provisioning.server performs one job invocation
+and exits with a JSON result. Serving agent_ad_provisioning.server:app
+with Uvicorn exposes health routes and POST /v1/run instead; Uvicorn must
+bind the port configured for the service deployment.
+
+Both entry points call app/durability.py with this agent's fixed workflow.
+Constructing the HTTP app does not start business work or open the Durable
+State DB. Shared argument validation and result handling live in
+cloud_journey_agents.durability.server.
+"""
 
 from cloud_journey_agents.durability.server import create_batch_app, run_job
 

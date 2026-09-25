@@ -1,4 +1,13 @@
-"""Verified request context and the downstream conversation reference."""
+"""Read verified delegation context and the downstream Assistant session ID.
+
+Before routing a question, the Orchestrator binds stored identity claims
+to the current ADK user. It then retrieves the ephemeral request token
+and the Assistant session reference saved from an earlier response.
+
+The routing tool requires a token before sending the request. Only the
+downstream session ID is persisted for conversation continuity; the user
+credential stays in shared request context.
+"""
 
 from google.adk.tools import ToolContext
 

@@ -1,4 +1,14 @@
-"""Assistant HTTP server; composition and session wiring live in their own modules."""
+"""HTTP entry point for authenticated Journey Assistant conversations.
+
+Uvicorn serves the app's health routes and POST /v1/query. A query verifies
+X-User-Authorization, establishes request-scoped user context, and calls
+the shared conversation runtime under that user's identity. Authentication
+failures are returned as HTTP 401.
+
+The model and tools are composed in agent.py; sessions.py lazily provides
+their persistent runner. Health checks do not create that runtime. Business
+status is obtained through the Assistant's tools during a conversation.
+"""
 
 from . import settings
 

@@ -1,4 +1,16 @@
-"""ADK-managed conversation storage, separate from business and checkpoint DBs."""
+"""Keep ADK conversation storage on one dedicated database event loop.
+
+Synchronous HTTP handlers and async agent callbacks can run on different
+threads or loops. PersistentSessionService forwards their session calls
+to one ADK DatabaseSessionService, keeping its async connections and locks
+on the same loop. close() releases that service and stops its worker thread.
+
+ADK owns session tables, serialization, and event/state updates. Connection
+setup uses SESSION_DATABASE_URL, with a local session-db default and driver
+normalization for PostgreSQL or SQLite. It never reuses business or durable
+checkpoint database configuration. The worker starts when the service is
+constructed, not merely when this module is imported.
+"""
 
 from __future__ import annotations
 

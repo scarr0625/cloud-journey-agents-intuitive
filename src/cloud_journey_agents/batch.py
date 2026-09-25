@@ -1,7 +1,13 @@
-"""Compatibility imports for this PoC's earlier batch API.
+"""Compatibility imports for callers of the PoC's earlier batch API.
 
-New integrations use cloud_journey_agents.durability directly. This file is not
-part of the durability copy set and need not replace another repo's batch.py.
+Workflow contracts, MCP result handling, and checkpoint execution now live
+under cloud_journey_agents.durability. Re-exporting those names here lets
+older callers keep their imports while all implementations share one source.
+
+The three batch agents import durability directly. This file is outside
+the durability copy set: keep the main repository's own batch.py when
+porting the capability, and connect its business operations through the
+runtime's business= gateway parameter.
 """
 
 from .durability.contracts import (

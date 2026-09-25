@@ -1,4 +1,15 @@
-"""Reusable ADK session lifecycle for separately deployed HTTP agents."""
+"""Run a conversational turn with persisted ADK sessions and verified context.
+
+ConversationRuntime binds one agent and application name to Session DB.
+Each query retrieves or creates a session scoped to that app and user,
+refreshes verified identity claims when needed, and runs the agent against
+the stored conversation. The response includes the reusable session ID.
+
+The synchronous entry point drives the async runner in its calling thread
+so request-scoped identity ContextVars remain available to tools. Session
+connections use the dedicated persistence service, which is registered
+for process-exit cleanup when the runtime is constructed.
+"""
 
 import asyncio
 import atexit

@@ -1,4 +1,14 @@
-"""Route questions to the independently deployed Assistant."""
+"""Route a user question to the independently deployed Assistant over HTTP.
+
+The tool forwards the verified request token and, when configured, adds
+a workload ID token for the Assistant's Cloud Run audience. It also sends
+the previous Assistant session ID so follow-up questions share context.
+
+The response is validated before returning its answer and saving the
+updated downstream session reference. Credentials are never added to that
+session state. Missing configuration or failed HTTP responses produce an
+explicit tool error instead of an invented Journey answer.
+"""
 
 import httpx
 from google.adk.tools import ToolContext

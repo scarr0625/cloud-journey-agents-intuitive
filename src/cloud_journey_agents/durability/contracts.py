@@ -1,4 +1,14 @@
-"""Contracts between agent business steps and durable execution."""
+"""Interfaces connecting agent-owned business steps to durable execution.
+
+An agent supplies a BatchWorkflow that selects a WorkflowStep. Its business
+gateway returns BusinessProgress backed by a persisted business result;
+the runtime translates that progress into a checkpoint and a JobResult.
+
+These small data objects and protocols let the main repository inject its
+own business implementation without importing this PoC's batch wrappers
+or MCP adapter. A completed operation may have successful=False, so callers
+must inspect the business outcome before advancing to the next agent.
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,14 @@
-"""AD provisioning owns the request and polling steps of the same operation."""
+"""Select AD submission or polling for one durable provisioning operation.
+
+Submission sends a stable Journey/operation idempotency key to the business
+gateway. Once a MyAccess request ID is saved, later polling uses that same
+reference. A repeated submit selects no new step when the reference exists;
+poll mode requires it, and resume chooses the appropriate step.
+
+This module owns those domain choices. The shared runtime reconciles
+business progress first and persists the resulting checkpoint. Waiting for
+external approval spans separate invocations, rather than a loop here.
+"""
 
 from cloud_journey_agents.durability.contracts import WorkflowStep
 from cloud_journey_agents.durability.models import BatchAgent, CheckpointStage

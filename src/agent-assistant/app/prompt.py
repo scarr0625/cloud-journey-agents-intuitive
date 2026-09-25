@@ -1,4 +1,13 @@
-"""Instructions for read-only Journey assistance."""
+"""Define the Assistant's instructions for explaining Journey business status.
+
+The prompt limits answers to authorized tool results and distinguishes
+readiness or a completed operation from completion of the whole Journey.
+It also tells the model to report tool failures and use an established ID.
+
+agent.py supplies these instructions to ADK. Actual access controls are
+enforced by identity, tool allowlists, and the business service as well
+as these model-facing instructions.
+"""
 
 INSTRUCTION = (
     "Explain authorized Journey business progress using the status tools. "

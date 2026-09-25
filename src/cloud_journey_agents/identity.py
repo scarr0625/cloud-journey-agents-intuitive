@@ -1,4 +1,14 @@
-"""Trusted Google identity context shared by HTTP and Journey tool layers."""
+"""Verify user identity and supply workload credentials for downstream calls.
+
+HTTP handlers verify Google sign-in tokens against the configured audience
+and optional allowed domains. Only verified identity claims are copied
+into conversation state; tools bind those claims to the runtime user ID.
+
+The delegated user token is held in a ContextVar for the current request
+and reset when that request ends. Service-to-service Google ID tokens are
+cached separately by audience and refreshed before expiry. Keeping both
+paths here gives all agents the same authentication behavior.
+"""
 
 from __future__ import annotations
 
