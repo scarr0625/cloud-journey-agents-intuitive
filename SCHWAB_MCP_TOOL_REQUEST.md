@@ -1,9 +1,15 @@
 # Schwab MCP tool implementation request
 
-Please provide the five batch capabilities below for APM Validation, AD
-Provisioning, and App Factory, and confirm how the existing read tools cover the
-Assistant's two status lookups. Existing services may be reused behind these
-capabilities; separate replacement implementations are not required.
+Please provide five business batch capabilities, three durable-state tools, and
+five session-state tools, and confirm how existing read tools cover the Assistant's
+two status lookups. **All database access must occur on the Schwab side through
+MCP. Agent service accounts have no direct database permissions.** Existing
+services may be reused behind these capabilities.
+
+The [Schwab implementation reference](references/schwab-mcp/README.md) contains
+executable persistence handlers, generated input schemas, SQL migration links,
+request/response examples, authorization rules, and transaction/retry requirements.
+It is server-side reference code for your existing authenticated MCP host.
 
 This request is based on the agent code in this repository and the five tool
 names supplied by the Schwab team. Their live descriptions, input/output schemas,
@@ -237,13 +243,13 @@ authorization implementation, but are not new calls required by this agent code.
 
 ## 5. Authorization and ownership
 
-| Calling workload | Allowed business capabilities |
+| Calling workload | Allowed MCP capabilities |
 | --- | --- |
-| Assistant | Authorized status by Journey/APM ID only, with delegated end-user identity. |
-| Orchestrator | No direct MCP calls in this implementation; delegates conversation requests to the Assistant. |
-| APM Validation | Read `apm-validation` results and invoke `ValidateApm`. |
-| AD Provisioning | Read `ad-provisioning` results, submit AD, and poll only requests owned by the Journey. |
-| App Factory | Read `app-factory-validation` results and invoke `ValidateAppFactory`. |
+| Assistant | Authorized status by Journey/APM ID and its own application/user sessions, with delegated end-user identity. |
+| Orchestrator | Its own application/user session tools through MCP; delegates business questions to Assistant. |
+| APM Validation | Read `apm-validation` results, invoke `ValidateApm`, and claim/save/finish only its checkpoints. |
+| AD Provisioning | Read `ad-provisioning` results, submit/poll only requests owned by the Journey, and claim/save/finish only its checkpoints. |
+| App Factory | Read `app-factory-validation` results, invoke `ValidateAppFactory`, and claim/save/finish only its checkpoints. |
 
 Schwab must enforce these permissions on the server using the authenticated
 workload, independently of client-side allowlists. Batch calls use workload
@@ -282,8 +288,10 @@ any exchange mechanism before integration; never put credentials in tool results
   unavailability, and unreadable/uncommitted results must use an error response.
   The current client recognizes MCP `isError` and transport failures, and rejects
   malformed/mismatched results. Error text should be actionable without exposing
-  credentials or unauthorized Journey data. Fine-grained automatic retry based on
-  server error codes is not implemented in the current adapter.
+  credentials or unauthorized Journey data. Persistence conflicts use machine
+  error codes; recognized transport failures on persistence mutations are retried
+  once with the same mutation ID. Business retries still require the idempotency
+  and reconciliation rules above.
 - Calls currently have a configurable 90-second client timeout. Return AD pending
   status within a bounded call and poll later. Confirm operation latency and retry
   expectations; this is a client setting, not a verified Schwab service SLA.
@@ -300,13 +308,43 @@ read guard currently normalizes the PoC's `APM00####` convention, such as
 `APM004001`. Confirm Schwab's actual formats before adopting these limits; adapt
 the agent validation/schema if necessary instead of truncating production IDs.
 
-## 7. Scope and acceptance criteria
+## 7. Required durable and session persistence tools
 
-MCP owns the requested **business capabilities**. The batch agents persist their
-own execution records and checkpoints directly in Durable State DB; the chat
-agents use Session DB. No MCP tools to create/update checkpoints or ADK sessions
-are requested. There is also no generic SQL, arbitrary status setter, new Journey
-creation, or downstream infrastructure-provisioning tool in this request.
+Schwab MCP owns these database transactions. They are internal runtime calls,
+separate from the model's business tool allowlist. See the
+[full persistence contract](references/schwab-mcp/README.md) for field limits,
+complete response envelopes, and implementation details.
+
+| Exact agent-side tool name | Caller | Arguments and required behavior |
+| --- | --- | --- |
+| `claim_durable_operation` | Three batch agents | `journey_id`, `agent_name`, `workflow_run_id`, `mutation_id`; atomically acquire/create a checkpoint and execution lease; return full snapshot. |
+| `save_durable_checkpoint` | Three batch agents | Above scope plus `checkpoint_id`, `execution_id`, `expected_version`, `current_stage`, `checkpoint_status`, nullable references/error; atomically save progress and audit; return version + 1. |
+| `finish_durable_operation` | Three batch agents | Same ownership/version fields, `mutation_id`, nullable `error`; end execution and release lease while preserving progress; return version + 1. |
+| `create_agent_session` | Assistant and Orchestrator runtimes | `app_name`, `user_id`, `session_id`, `mutation_id`, optional `state`; create session at revision 1; return full session envelope. |
+| `get_agent_session` | Assistant and Orchestrator runtimes | `app_name`, `user_id`, `session_id`, optional event-filter `config`; return session/version or authorized absence. |
+| `list_agent_sessions` | Assistant and Orchestrator runtimes | `app_name`, `user_id`; return only this user's session summaries and versions. |
+| `append_agent_session_event` | Assistant and Orchestrator runtimes | Session scope, `mutation_id`, `expected_version`, complete ADK `event`; atomically commit event, state deltas, revision, and receipt. |
+| `delete_agent_session` | Assistant and Orchestrator runtimes | Session scope and `mutation_id`; delete conversation and old receipts, retain deletion marker, acknowledge the exact scope. |
+
+For every mutation, persist an idempotent response receipt in the same database
+transaction as the state change. Replay with the same ID/payload returns the
+original response. Reject changed input, stale versions, expired leases, and
+cross-workload or cross-user requests. Use verified credentials, never trust
+`agent_name`, `app_name`, or `user_id` as authorization by themselves. Session calls
+require delegated user authentication in addition to workload authentication.
+
+Apply the [durable](migrations/durable-state/apply.sql) and
+[session](migrations/session-state/apply.sql) schemas through Schwab's migration
+pipeline. The server reference reflects existing tables and never creates them
+at runtime. Adapt the [business schema](migrations/business-state/apply.sql) to
+existing Journey/Data API tables. No agent identity receives DB IAM, database
+credentials, network attachment to databases, or table privileges.
+
+## 8. Scope and acceptance criteria
+
+MCP owns business, durable, and session access. There is no generic SQL, arbitrary
+business status setter, new Journey creation, or downstream infrastructure
+provisioning tool in this request.
 
 Before integration is accepted, demonstrate:
 
@@ -324,12 +362,21 @@ Before integration is accepted, demonstrate:
    through `GetJourneyOperation`, with no repeated business action.
 7. Workload and user permissions are enforced, and business-negative outcomes are
    distinguishable from transient infrastructure/tool errors.
+8. All eight persistence tools are advertised; state, audit/events, and retry
+   receipts commit atomically. A response lost after commit replays exactly once.
+9. Concurrent claims across server replicas create one owner; stale or expired
+   workers cannot change checkpoint progress or release another execution's lease.
+10. Sessions survive agent restart, append events/state together, reject stale
+    revisions and cross-user/app access, and cannot be resurrected by a replay
+    after deletion. Temporary state and tokens are not persisted.
+11. Run these checks on PostgreSQL behind the real authenticated MCP transport
+    with agent database permissions absent. Verify rollback under injected failures.
 
 Please confirm the implementation owner for each capability, reusable underlying
 Data API operations, final schemas/name mapping, authorization requirements,
-test-environment access, and target availability. The initial request is **five
-batch capabilities plus verification/reuse of two status reads**, not seven
-assumed new server implementations.
+test-environment access, and target availability. The request is **five business
+capabilities plus eight persistence tools and verification/reuse of two status
+reads**. Confirm existing implementations before counting new server work.
 
 ## Traceability to the agent implementation
 

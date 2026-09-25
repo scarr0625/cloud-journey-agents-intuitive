@@ -4,7 +4,7 @@ get_runtime() lazily creates and caches ConversationRuntime with this
 agent's application name. That runtime stores the conversation and the
 downstream Assistant session reference under the Orchestrator's namespace.
 
-Database handling and runner lifecycle belong to the shared sessions
+MCP persistence and runner lifecycle belong to the shared sessions
 package. This file provides application wiring, and health checks can
 run before the conversation runtime is constructed.
 """

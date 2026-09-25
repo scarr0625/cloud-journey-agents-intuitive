@@ -1,12 +1,17 @@
-# Required client MCP business contract
+# Required Schwab MCP contract
 
 For the Schwab-facing implementation request, existing-tool reuse assessment, and
 per-tool details, see [SCHWAB_MCP_TOOL_REQUEST.md](SCHWAB_MCP_TOOL_REQUEST.md).
 
-These tool names are the expected integration surface implemented by the adapter;
-they are not assertions about the client's currently installed server. Map them
-to the client implementation before deploying. All business writes go through
-Data API; this MCP contract does not expose checkpoint or session persistence.
+All database access goes through Schwab MCP. Agents have no database credentials,
+drivers configured for persistence, or database permissions. Business services
+behind MCP own Journey writes; Schwab's MCP persistence handlers own durable and
+session transactions. These tool names are the expected client integration
+surface, not claims about Schwab's installed catalog. Agree aliases/mappings before
+deploying. See the [server implementation reference](references/schwab-mcp/README.md)
+for executable handlers, input schemas, SQL files, full envelopes, and error codes.
+
+## Business tools
 
 | Tool | Arguments | Caller |
 | --- | --- | --- |
@@ -55,3 +60,54 @@ transport, token exchange, tool naming, or response envelope, adapt
 `src/cloud_journey_agents/durability/mcp_gateway.py` centrally. `guardrails.py` owns the tool
 allowlists and read argument checks. The transport verifies the requested tool
 is advertised by MCP before calling it; missing tools fail closed.
+
+## Durable state tools
+
+These are internal batch runtime calls, separately allowlisted from business tools.
+Every mutation includes `mutation_id`. Ownership fields on save/finish are
+`journey_id`, `agent_name`, `workflow_run_id`, `checkpoint_id`, `execution_id`, and
+`expected_version`.
+
+| Tool | Required arguments besides mutation ID | Optional nullable fields | Result |
+| --- | --- | --- | --- |
+| `claim_durable_operation` | `journey_id`, `agent_name`, `workflow_run_id` | None | `{"checkpoint": <snapshot>}` with execution, positive version, and lease |
+| `save_durable_checkpoint` | Ownership fields, `current_stage`, `checkpoint_status` | `external_reference`, `result_reference`, `last_error` | Full snapshot at expected version + 1 |
+| `finish_durable_operation` | Ownership fields | `error` | Full snapshot at expected version + 1, lease cleared |
+
+Schwab verifies workload-to-agent binding and Journey authorization, atomically
+claims an operation lease, and rejects stale execution/version/lease writes.
+Mutation receipts commit with state/audit writes, so retrying a lost reply cannot
+create another execution or checkpoint event. Agent code never sends SQL.
+
+## Session state tools
+
+These are internal ADK runtime calls from both chat agents, never model tools.
+All calls require `app_name` and `user_id`, verified against workload and delegated
+user identity. Session-specific tools also require `session_id`.
+
+| Tool | Additional arguments | Result |
+| --- | --- | --- |
+| `create_agent_session` | `mutation_id`, optional `state` | `{"session": <ADK session>, "version": 1}` |
+| `get_agent_session` | Optional `config` event filters | Session envelope or JSON null |
+| `list_agent_sessions` | None; no session ID | `{"sessions": [<summary envelope>, ...]}` |
+| `append_agent_session_event` | `mutation_id`, `expected_version`, full ADK `event` | Updated full session envelope at version + 1 |
+| `delete_agent_session` | `mutation_id` | Scope fields plus `deleted: true` |
+
+Session events, state deltas, revisions, and receipts commit atomically. ADK event
+JSON uses snake_case (`by_alias=False`), pinned to ADK 2.9.2. Temporary state is
+not persisted; identity claims must match verified user claims. Session IDs are
+scoped by app/user; deletion prevents an old create replay from resurrecting them.
+
+## Error and recovery boundary
+
+Errors use MCP `isError` and `{"ok":false,"error":{"code":"...","message":"..."}}`.
+Persistence clients retry recognized transport failures once with the same
+mutation ID/payload. Conflicts and malformed acknowledgments fail closed.
+An uncertain checkpoint save stops the invocation without writing FAILED from
+a stale snapshot; a later claim reconciles committed business progress. Business
+mutation idempotency remains the responsibility of Schwab's business tools.
+
+There is no cross-database transaction, generic SQL tool, or automatic local DB
+fallback. For complete atomicity, identity, retention, and deployment requirements,
+use the [Schwab reference](references/schwab-mcp/README.md) and
+[migration guide](migrations/README.md).

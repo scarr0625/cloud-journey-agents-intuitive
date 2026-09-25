@@ -6,8 +6,8 @@ where business work committed but the worker stopped before its checkpoint
 save. Existing AD request and result references survive subsequent runs.
 
 BatchRuntime coordinates step execution, checkpoint updates, and lease
-release. execute_job() builds the database resources and disposes its
-engine on exit. Callers can inject business=; otherwise the optional MCP
+release through Schwab MCP. Agents hold no database credentials or connections.
+Callers can inject business=; otherwise the optional MCP
 gateway is loaded. Neither path requires batch.py or batch_server.py.
 """
 
@@ -16,9 +16,8 @@ from __future__ import annotations
 from dataclasses import asdict
 import logging
 
-from .checkpoints import CheckpointStore, OperationBusy
+from .checkpoints import CheckpointStore, CheckpointError, OperationBusy
 from .contracts import BatchWorkflow, BusinessGateway, BusinessProgress, JobResult
-from .database import build_durable_engine, durable_session_factory
 from .models import BatchAgent, CheckpointStage, CheckpointStatus, OperationCheckpoint
 
 logger = logging.getLogger("cloud_journey_agents.durability")
@@ -74,8 +73,9 @@ class BatchRuntime:
                     progress = step.execute(self.business, checkpoint)
                     checkpoint = self._save_progress(checkpoint, progress)
             self.store.finish(checkpoint)
-        except OperationBusy:
-            # Never allow a stale worker to overwrite a new owner's progress.
+        except CheckpointError:
+            # A mutation may already have committed. Do not write from a stale
+            # snapshot; stop and let a later invocation reclaim/reconcile it.
             raise
         except Exception as exc:
             checkpoint = self.store.save(
@@ -128,22 +128,14 @@ def execute_job(
     """
     if mode not in workflow.modes:
         raise ValueError(f"Unsupported mode for {workflow.agent.value}: {mode}")
-    engine = build_durable_engine()
-    try:
-        # Migrations are applied centrally; runtime identities only need data access.
-        if business is None:
-            from .mcp_gateway import build_mcp_business_gateway
+    if business is None:
+        from .mcp_gateway import build_mcp_business_gateway
 
-            business = build_mcp_business_gateway(workflow.agent)
-        runtime = BatchRuntime(
-            CheckpointStore(durable_session_factory(engine)),
-            business,
-        )
-        result = runtime.run(workflow, journey_id, workflow_run_id, mode=mode)
-        logger.info(
-            "Batch invocation finished",
-            extra={"journey_fields": {"agent": workflow.agent.value, **asdict(result)}},
-        )
-        return result
-    finally:
-        engine.dispose()
+        business = build_mcp_business_gateway(workflow.agent)
+    runtime = BatchRuntime(CheckpointStore(workflow.agent), business)
+    result = runtime.run(workflow, journey_id, workflow_run_id, mode=mode)
+    logger.info(
+        "Batch invocation finished",
+        extra={"journey_fields": {"agent": workflow.agent.value, **asdict(result)}},
+    )
+    return result

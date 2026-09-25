@@ -13,25 +13,20 @@ dependencies = [
   "httpx>=0.27,<1",
   "mcp>=1.26,<2",
   "python-dotenv>=1,<2",
+  "pydantic>=2,<3",
 ]
 
 [project.optional-dependencies]
 batch = [
-  "SQLAlchemy>=2,<3",
-  "psycopg[binary]>=3.1,<4",
-  "cloud-sql-python-connector[pg8000]>=1.18,<2",
   "fastapi>=0.115,<1",
   "uvicorn>=0.30,<1",
 ]
 chat = [
   # Keep the ADK release aligned with migrations/session-state/000_adk_sessions.sql.
   "google-adk==2.9.2",
-  "aiosqlite>=0.20,<1",
-  "psycopg[binary]>=3.1,<4",
   "fastapi>=0.115,<1",
   "uvicorn>=0.30,<1",
 ]
-local-db = ["SQLAlchemy>=2,<3", "psycopg[binary]>=3.1,<4"]
 
 [tool.setuptools.packages.find]
 where = ["."]

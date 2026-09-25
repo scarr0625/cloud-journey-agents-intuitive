@@ -1,10 +1,23 @@
 # Deploy the five agent images to Cloud Run
 
-This repository supplies independent Dockerfiles, not a deployment of the client's
-MCP/Data API. Build from the repository root and push each image to your approved
-Artifact Registry repository. No cloud changes are performed by the local setup.
+All database connections belong to Schwab's MCP/business services. Agent service
+accounts need MCP invocation and their approved model/service permissions only.
+Do not grant agents Cloud SQL access, database credentials, table privileges, or
+database network attachments. This repository does not deploy Schwab's MCP host.
+
+## Schwab prerequisites
+
+Implement the [requested MCP tools](SCHWAB_MCP_TOOL_REQUEST.md), using the
+[server reference](references/schwab-mcp/README.md) and
+[migration guide](migrations/README.md). Apply schema changes with a migration
+identity. Bind each authenticated workload to its permitted batch agent or chat
+application, and validate delegated user identity on every session/status call.
+Complete PostgreSQL, authentication, and business-provider acceptance tests before
+enabling production traffic. The checked-in reference is not a deployed service.
 
 ## Build context
+
+Build from the repository root and push to the approved Artifact Registry:
 
 ```powershell
 docker build -f src/agent-apm-validation/Dockerfile -t REGION-docker.pkg.dev/PROJECT/REPOSITORY/agent-apm-validation:VERSION .
@@ -14,105 +27,81 @@ docker build -f src/agent-assistant/Dockerfile -t REGION-docker.pkg.dev/PROJECT/
 docker build -f src/agent-orchestrator/Dockerfile -t REGION-docker.pkg.dev/PROJECT/REPOSITORY/agent-orchestrator:VERSION .
 ```
 
-Use the same context (`.`) in the client's Cloud Build pipeline. The Dockerfile
-path selects the agent, while COPY paths are relative to the repository root.
-Shared-library changes require rebuilding each image that consumes the library.
-The shared distribution is defined by `src/pyproject.toml`, with its modules in
-`src/cloud_journey_agents/`. Batch images install its `batch` extra; HTTP
-chat images install its `chat` extra. The shared package is never deployed as a
-network service.
+The root context lets each Dockerfile copy `src/pyproject.toml`, the shared
+`src/cloud_journey_agents/` code, and that agent's own `app/`. Batch images use the
+`batch` extra; chat images use `chat`. Shared changes require rebuilding consumers.
+Neither the Schwab reference nor historical SQL simulator is included in agent
+images. The shared Python package has no separate network deployment.
+
+## MCP connection configuration
+
+Set `MCP_URL` on **all five agents**. The transport uses Streamable HTTP and checks
+tool availability before calling. `MCP_CLOUD_RUN_AUDIENCE` enables a workload ID
+token in `X-Serverless-Authorization`; optional `MCP_BEARER_TOKEN` is an application
+credential from the approved secret store. Use the authentication mechanism agreed
+with Schwab; adapt the central transport if its token exchange differs.
+
+Both chat agents forward the verified end-user token using `MCP_USER_AUTH_HEADER`
+(`X-User-Authorization` by default). Schwab must verify that token independently
+and authorize its subject. Never treat an unverified header or user_id argument
+as identity. Neither tokens nor database secrets belong in conversation state.
 
 ## Batch jobs
 
-Deploy APM Validation, AD Provisioning, and App Factory as separate Cloud Run
-Jobs. Each image fixes its agent identity; there is no caller-controlled --agent
-argument. Give each job its own workload identity and corresponding MCP permissions.
+Deploy APM Validation, AD Provisioning, and App Factory as separate Cloud Run Jobs,
+each with its own workload identity. The image fixes agent identity; there is no
+caller-controlled `--agent` option. Each identity needs its business tools plus
+durable claim/save/finish tools, restricted to its operation.
 
-- `DURABLE_DATABASE_URL` connects to durable-state-db, using the Auth Proxy/socket
-  or another configured PostgreSQL endpoint.
-- Alternatively set `DURABLE_CLOUD_SQL_INSTANCE`, `DURABLE_DB_USER`,
-  `DURABLE_DB_NAME`, and `DURABLE_DB_PASSWORD`, or `DURABLE_DB_IAM_AUTH=true`.
-  `DURABLE_DB_IP_TYPE` defaults to PRIVATE and must match network connectivity.
-- `MCP_URL` is the client's Streamable HTTP endpoint. `MCP_CLOUD_RUN_AUDIENCE`
-  requests a Google service ID token in X-Serverless-Authorization. Optional
-  `MCP_BEARER_TOKEN` is an application credential supplied through a secret.
-- Do not configure Business DB or Session DB connections on batch jobs.
-
-Use [migrations/README.md](migrations/README.md) to initialize the three separate
-state databases. Apply `migrations/durable-state/apply.sql` through your
-migration pipeline. Grant batch database identities the data privileges needed
-for checkpoint transactions. Deployed jobs never create tables.
-
-Example after pushing the image (replace every placeholder):
+Example after pushing the image (replace placeholders):
 
 ```powershell
-gcloud run jobs deploy agent-apm-validation --image=REGION-docker.pkg.dev/PROJECT/REPOSITORY/agent-apm-validation:VERSION --region=REGION --service-account=APM_JOB_SA --tasks=1 --parallelism=1 --task-timeout=240s --max-retries=0 --set-env-vars="MCP_URL=https://PRIVATE_MCP/mcp,MCP_CLOUD_RUN_AUDIENCE=https://PRIVATE_MCP" --set-secrets="DURABLE_DATABASE_URL=DURABLE_URL_SECRET:latest"
+gcloud run jobs deploy agent-apm-validation --image=REGION-docker.pkg.dev/PROJECT/REPOSITORY/agent-apm-validation:VERSION --region=REGION --service-account=APM_JOB_SA --tasks=1 --parallelism=1 --task-timeout=240s --max-retries=0 --set-env-vars="MCP_URL=https://PRIVATE_MCP/mcp,MCP_CLOUD_RUN_AUDIENCE=https://PRIVATE_MCP"
 ```
 
-Attach the Cloud SQL instance when using a Unix socket, or configure the network
-and Cloud SQL connector as required by the selected connection method. Apply
-corresponding configuration to the AD and App Factory jobs. Keep the job timeout
-below the 300-second checkpoint lease. If a process is killed, a retry may need to
-wait until the lease expires. Use controlled retries in Workflows; a terminal
-negative business result should not be retried automatically.
+Configure AD and App Factory similarly. Keep execution timeout below Schwab's
+checkpoint lease (reference default: 300 seconds). A killed worker's lease may
+need to expire before another invocation claims it. There is no lease-renewal
+tool, so business operations must finish within the bounded invocation.
 
-Workflows passes `--journey-id` and `--workflow-run-id` to each execution. AD also
-accepts `--mode submit` or `--mode poll`. See [workflows/README.md](workflows/README.md)
-for ordering and the distinction between successful job execution and pending work.
+Workflows passes `--journey-id` and `--workflow-run-id`; AD accepts `--mode submit`
+or `--mode poll`. Pending human approval is polled in later invocations after
+releasing the lease. Exit 0 may mean WAITING; exit 2 is a recorded negative
+business outcome. Inspect results before advancing. See [workflows/README.md](workflows/README.md).
 
-### Optional batch HTTP interface
+The optional `/health` and `POST /v1/run` service interface uses the same runtime.
+Override the entry point to `uvicorn` with arguments
+`agent_ad_provisioning.server:app,--host,0.0.0.0,--port,8080` (substitute the agent).
+Keep Cloud Run authentication enabled and allow only approved workflow callers.
+Use the same MCP permissions and a request timeout below the lease. Input is
+`journey_id`, `workflow_run_id`, and optional `mode`; inspect `checkpoint_status`
+and `successful`, even on HTTP 200. Lease conflicts return 409; MCP persistence
+unavailability returns 503.
 
-The original `/health` and `POST /v1/run` service interface is available on each
-batch agent using the same workflow and checkpoint runtime. To deploy an existing
-batch image as a service, override its Job entry point with command `uvicorn` and
-arguments `agent_ad_provisioning.server:app,--host,0.0.0.0,--port,8080` (substitute
-the selected agent's Python module). Keep Cloud Run authentication enabled and
-grant only the workflow caller invoker access. Use the same batch service account,
-MCP allowlist, Durable State DB settings, and timeout below the checkpoint lease.
+## Chat HTTP services
 
-Send `journey_id`, `workflow_run_id`, and optionally `mode` in the JSON request.
-The endpoint returns the CLI result object, including `successful` and
-`checkpoint_status`; HTTP 200 can therefore mean WAITING or a negative business
-outcome. The caller must inspect both fields before advancing the workflow.
-An active operation lease returns HTTP 409. The request cannot select an agent.
+Deploy Assistant and Orchestrator as separate authenticated services on port 8080.
+Set `OAUTH_CLIENT_ID` and optional `ALLOWED_USER_DOMAINS` for verified inbound user
+authentication. Configure MCP on both services for session persistence. Assistant
+also needs its two authorized business status reads; Orchestrator needs no batch
+or business-write permissions. Session tools are internal runtime calls.
 
-## HTTP services
-
-Deploy Assistant and Orchestrator as separate authenticated Cloud Run services.
-Both listen on port 8080. Configure `SESSION_DATABASE_URL` to session-db and inject
-verified Google user authentication configuration (`OAUTH_CLIENT_ID` and optional
-`ALLOWED_USER_DOMAINS`). Apply `migrations/session-state/apply.sql` to Session DB
-through the migration identity before deploying. It creates ADK v1 tables and the
-version marker for the pinned `google-adk==2.9.2` dependency. Runtime identities
-need access to their session tables and metadata; the migration identity owns DDL.
-
-Configure `ASSISTANT_URL` and `ASSISTANT_CLOUD_RUN_AUDIENCE` on the orchestrator.
-Grant its workload identity Cloud Run invoker access to the Assistant. It sends
-its service ID token in Authorization and the user's verified token separately
-in X-User-Authorization. Each service validates the end-user token.
-
-Configure MCP on the Assistant as above, plus `MCP_USER_AUTH_HEADER` to match the
-client's established delegation contract (X-User-Authorization by default).
-The MCP server must validate the delegated token and enforce user-level access;
-this header alone is not authorization. When the client uses an MCP-specific OAuth
-access token rather than the existing Google delegation contract, integrate its
-approved token exchange/provider before enabling that connection.
-
-Example after pushing the image:
+Set `ASSISTANT_URL` and `ASSISTANT_CLOUD_RUN_AUDIENCE` on Orchestrator and grant it
+invoker access to Assistant. The downstream request uses workload authentication
+and forwards user identity separately; both services verify the end user.
 
 ```powershell
-gcloud run deploy agent-assistant --image=REGION-docker.pkg.dev/PROJECT/REPOSITORY/agent-assistant:VERSION --region=REGION --service-account=ASSISTANT_SA --no-allow-unauthenticated --set-env-vars="OAUTH_CLIENT_ID=CLIENT_ID,MCP_URL=https://PRIVATE_MCP/mcp,MCP_CLOUD_RUN_AUDIENCE=https://PRIVATE_MCP" --set-secrets="SESSION_DATABASE_URL=SESSION_URL_SECRET:latest"
+gcloud run deploy agent-assistant --image=REGION-docker.pkg.dev/PROJECT/REPOSITORY/agent-assistant:VERSION --region=REGION --service-account=ASSISTANT_SA --no-allow-unauthenticated --set-env-vars="OAUTH_CLIENT_ID=CLIENT_ID,MCP_URL=https://PRIVATE_MCP/mcp,MCP_CLOUD_RUN_AUDIENCE=https://PRIVATE_MCP"
 ```
 
-Configure the selected Gemini/Vertex AI model and credentials using the agent's
-`.env.example`. Deploy the orchestrator similarly with its Assistant URL and
-appropriate inbound gateway/IAM policy. Neither HTTP identity should have
-checkpoint database access. The old playground is an optional local example;
-it is not included in these production images.
+Deploy Orchestrator similarly, adding Assistant routing settings. Configure the
+approved Gemini/Vertex AI model and credentials using each `.env.example`.
+There is no `SESSION_DATABASE_URL` or `DURABLE_DATABASE_URL` on deployed agents.
+MCP failures fail the request; they never trigger local database fallback.
 
 ## Validation scope
 
-Automated tests cover package boundaries, checkpoint recovery, the local business
-simulator, MCP adapters/transport, session persistence, and agent routing. Real
-client authorization, Data API transaction/idempotency guarantees, Cloud SQL,
-Cloud Run IAM, and network access require validation in the client's environment.
+Repository tests cover MCP persistence contracts, lost replies, stale ownership,
+session identity/state, batch recovery, packaging boundaries, and reference DDL.
+Schwab must validate its actual MCP authentication, PostgreSQL concurrency,
+database privileges, Cloud Run IAM/network, and external provider idempotency.

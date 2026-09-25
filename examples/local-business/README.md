@@ -1,3 +1,7 @@
+> Historical SQL simulator / server-side test reference. This direct-database
+> example is not a policy-compliant agent deployment. Production agents use MCP
+> for all persistence; see `references/schwab-mcp/README.md` at the repo root.
+
 # Local business simulator and preserved interactive demo
 
 This package contains the original business models, JourneyState transition rules,

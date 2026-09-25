@@ -5,7 +5,7 @@ values. APP_NAME identifies the ADK agent and its session namespace;
 APP_TITLE labels the HTTP app, and ASSISTANT_MODEL selects the model.
 
 These values are read when the module is imported. Model selection belongs
-to this agent, while database and identity settings remain with the shared
+to this agent, while MCP and identity settings remain with the shared
 components that consume them.
 """
 

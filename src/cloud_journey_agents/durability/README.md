@@ -8,8 +8,8 @@ callers; the three agents use the durability package directly.
 ## Files to copy and integration points
 
 1. Copy this entire `cloud_journey_agents/durability/` directory into the main
-   shared package. It contains the contracts, models, database connections,
-   checkpoint store, runtime, optional MCP adapter, and optional HTTP/CLI wrapper.
+   shared package. It contains workflow contracts, wire models, the MCP checkpoint
+   client, recovery runtime, business MCP adapter, and optional HTTP/CLI wrapper.
 2. Copy `app/durability.py` into APM Validation, AD Provisioning, and App Factory.
 3. Bind each module to its agent's workflow. This repo exposes `WORKFLOW` in
    `app/job.py`, with `agent`, `modes`, and `next_step(checkpoint, mode)` as defined
@@ -19,9 +19,13 @@ callers; the three agents use the durability package directly.
    `durability.execute_job(journey_id, workflow_run_id, mode=mode)`. The call must
    encompass the business step so the runtime can claim its checkpoint before
    invoking it. Do not execute the old unwrapped business step a second time.
-5. Apply `migrations/durable-state/000_execution_checkpoints.sql` to the Durable
-   State DB, and supply `DURABLE_DATABASE_URL` or the existing `DURABLE_CLOUD_SQL_*`
-   / `DURABLE_DB_*` configuration documented in each agent's `.env.example`.
+5. Have Schwab implement `claim_durable_operation`, `save_durable_checkpoint`, and
+   `finish_durable_operation`, and apply `migrations/durable-state/apply.sql` using
+   its server-side migration identity. Use the
+   [implementation reference](../../../references/schwab-mcp/README.md).
+6. Configure agent `MCP_URL` and approved workload authentication. Give agents MCP
+   invocation permission only; all DB credentials and DB permissions stay on the
+   Schwab side. No database environment variables are needed on an agent.
 
 Keep the main repo's routes and CLI parsing if you prefer. If adopting this repo's
 complete durable HTTP/CLI adapter, the only server wiring needed here is:
@@ -68,18 +72,22 @@ authorization and business transitions in the main repo's existing business path
 Without `business=`, the runtime lazily uses `mcp_gateway.py`. That adapter expects
 this repo's `McpClient`, `McpError`, and `BATCH_TOOLS` interfaces, plus the response
 contract in the root `MCP_CONTRACT.md`. If the main repo differs, inject its gateway
-instead of replacing its MCP or guardrail modules.
+instead of replacing its MCP or guardrail modules. The injected business gateway
+must also use Schwab MCP for all state access.
 
 ## Shared helpers and dependencies
 
-The core database configuration reuses `config.setting` and
-`config.required_setting`. The optional server adapter additionally uses
-`config.load_config` and `logs.configure_logging`. Verify those helper signatures
-in the main repo or adapt these calls locally; its source is not available here.
+The checkpoint client uses `mcp.McpClient`, `mcp.McpError`, `mcp.call_idempotent`,
+and `guardrails.DURABLE_TOOLS`. Merge these interfaces into the main repository's
+existing transport/allowlists, or adapt their call sites; replacing whole shared
+modules is unnecessary. Preserve structured error codes and retries with the
+same mutation ID. `CheckpointStore(..., client=...)` supports an existing
+compatible client. The optional server wrapper uses `config.load_config` and
+`logs.configure_logging`; check those signatures in the target repository.
 
 Ensure the existing package manifest includes `cloud_journey_agents.durability`
-and the required dependencies from the `batch` extra in `src/pyproject.toml`:
-SQLAlchemy and the PostgreSQL driver, the Cloud SQL connector if used, and FastAPI
-for the optional HTTP adapter (Uvicorn to serve it). Merge dependency entries into
-the main manifest; replacing its whole manifest is unnecessary. No session or
-business database migration is needed to add the durable checkpoint capability.
+and the common dependencies plus `batch` extra in `src/pyproject.toml`: Pydantic,
+MCP transport/authentication dependencies, and FastAPI/Uvicorn for the HTTP adapter.
+No SQLAlchemy, PostgreSQL driver, or Cloud SQL connector is needed by durability
+on agents. Merge dependencies into the main manifest. Adding only durability
+requires the durable schema on Schwab's side; chat session migration is separate.

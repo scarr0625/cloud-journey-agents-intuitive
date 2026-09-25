@@ -20,7 +20,7 @@ uvicorn agent_assistant.server:app --port 8000
 
 The endpoints are `/health`, `/healthz`, and `POST /v1/query`. The query request
 accepts `query` and optional `session_id`; verified user authentication is passed
-in `X-User-Authorization`. Sessions use Session DB; no business or checkpoint
+in `X-User-Authorization`. Sessions use Session DB through Schwab MCP; no business or checkpoint
 SQL models are imported.
 
 Prompts, tools, and routing stay in `app/`. Shared identity, guardrails, MCP,
@@ -40,3 +40,7 @@ The `app/` layout follows the original agent structure:
 | `sessions.py` | Bind the agent to the shared conversation runtime |
 | `settings.py` | Agent model configuration |
 | `tools.py` | Read-only Journey status tools |
+
+All database access uses MCP, including ADK sessions. Configure MCP_URL and the
+approved workload/user delegation headers. Do not set SESSION_DATABASE_URL or
+grant this service account database access. Schwab owns session migrations.

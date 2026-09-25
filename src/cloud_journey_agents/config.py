@@ -4,9 +4,9 @@ Entry points call load_config() to load local .env defaults without
 replacing values supplied by the deployment. Consumers then read settings
 or require a nonempty value when their operation needs it.
 
-The local database access gate also lives here so every caller uses the
-same opt-in rule and Cloud Run exclusion. Importing this module alone
-does not load a .env file or validate every workload's configuration.
+The legacy local-read flag is retained for the historical SQL simulator only;
+the deployed journey_db helper always rejects direct access. Importing this
+module does not load a .env file or validate every workload's configuration.
 """
 
 import os

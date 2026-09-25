@@ -8,13 +8,8 @@ from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import select
 
-from cloud_journey_agents.durability import mcp_gateway
-from cloud_journey_agents.durability.database import (
-    build_durable_engine,
-    durable_session_factory,
-    init_durable_db,
-)
-from cloud_journey_agents.durability.models import AgentExecution, OperationCheckpoint
+from cloud_journey_agents.durability import checkpoints, mcp_gateway
+from schwab_mcp_persistence.service import Principal
 
 
 @pytest.mark.parametrize(
@@ -35,13 +30,11 @@ from cloud_journey_agents.durability.models import AgentExecution, OperationChec
     ],
 )
 def test_agent_cli_and_http_resume_durable_state(
-    monkeypatch, tmp_path, capsys, package, agent_name, operation, tool, outcome, stage
+    monkeypatch, capsys, persistence_service, mcp_client_factory,
+    package, agent_name, operation, tool, outcome, stage
 ):
-    monkeypatch.setenv("DURABLE_DATABASE_URL", f"sqlite:///{tmp_path / 'durable.sqlite'}")
-    # This setup stands in for centrally applied migrations, outside the agent.
-    engine = build_durable_engine()
-    init_durable_db(engine)
-    engine.dispose()
+    monkeypatch.setenv("DURABLE_DATABASE_URL", "invalid://agents-must-not-connect")
+    monkeypatch.setattr(checkpoints, "McpClient", mcp_client_factory(Principal(agent_name)))
     progress = {}
     writes = []
     expected_tools = {"get_journey_operation", tool}
@@ -83,47 +76,44 @@ def test_agent_cli_and_http_resume_durable_state(
 
     monkeypatch.setattr(durability, "execute_workflow", execute)
     server = importlib.import_module(f"{package}.server")
-    try:
-        argv = ["--journey-id", "J-123", "--workflow-run-id", "cli-run"]
-        if is_ad:
-            argv += ["--mode", "submit"]
-        server.main(argv)
-        initial = json.loads(capsys.readouterr().out)
-        assert initial["checkpoint_status"] == ("WAITING" if is_ad else "COMPLETED")
-        assert initial["current_stage"] == stage
+    argv = ["--journey-id", "J-123", "--workflow-run-id", "cli-run"]
+    if is_ad:
+        argv += ["--mode", "submit"]
+    server.main(argv)
+    initial = json.loads(capsys.readouterr().out)
+    assert initial["checkpoint_status"] == ("WAITING" if is_ad else "COMPLETED")
+    assert initial["current_stage"] == stage
 
-        # Each invocation creates a fresh runtime; the checkpoint survives it.
-        with TestClient(server.app) as client:
-            for run_id in ("http-run", "retry-run"):
-                response = client.post("/v1/run", json={
-                    "journey_id": "J-123", "workflow_run_id": run_id,
-                    "mode": "poll" if is_ad else "resume",
-                })
-                assert response.status_code == 200
-                result = response.json()
-                assert result["checkpoint_id"] == initial["checkpoint_id"]
-                assert result["execution_id"] != initial["execution_id"]
-                assert result["checkpoint_status"] == "COMPLETED"
-                assert result["successful"] is True
-                assert result["external_reference"] == ("MA-123" if is_ad else None)
+    # Each invocation creates a fresh runtime; the checkpoint survives it.
+    with TestClient(server.app) as client:
+        for run_id in ("http-run", "retry-run"):
+            response = client.post("/v1/run", json={
+                "journey_id": "J-123", "workflow_run_id": run_id,
+                "mode": "poll" if is_ad else "resume",
+            })
+            assert response.status_code == 200
+            result = response.json()
+            assert result["checkpoint_id"] == initial["checkpoint_id"]
+            assert result["execution_id"] != initial["execution_id"]
+            assert result["checkpoint_status"] == "COMPLETED"
+            assert result["successful"] is True
+            assert result["external_reference"] == ("MA-123" if is_ad else None)
 
-        assert bound_workflows == [durability.WORKFLOW] * 3
-        assert writes == [tool] + (["poll_ad_provisioning"] if is_ad else [])
-        with durable_session_factory(engine)() as session:
-            checkpoint = session.scalars(select(OperationCheckpoint)).one()
-            assert checkpoint.operation_key == operation
-            executions = session.scalars(select(AgentExecution)).all()
-            assert len(executions) == 3
-            assert {execution.agent_name for execution in executions} == {agent_name}
-            assert {execution.workflow_run_id for execution in executions} == {
-                "cli-run", "http-run", "retry-run",
-            }
-    finally:
-        engine.dispose()
+    assert bound_workflows == [durability.WORKFLOW] * 3
+    assert writes == [tool] + (["poll_ad_provisioning"] if is_ad else [])
+    with persistence_service.durable_engine.connect() as connection:
+        checkpoint = connection.execute(select(persistence_service.durable.tables["operation_checkpoint"])).mappings().one()
+        assert checkpoint["operation_key"] == operation
+        executions = connection.execute(select(persistence_service.durable.tables["agent_execution"])).mappings().all()
+        assert len(executions) == 3
+        assert {execution["agent_name"] for execution in executions} == {agent_name}
+        assert {execution["workflow_run_id"] for execution in executions} == {
+            "cli-run", "http-run", "retry-run",
+        }
 
 
 def test_injected_business_gateway_works_without_batch_modules_or_mcp_adapter(
-    monkeypatch, tmp_path
+    monkeypatch, mcp_client_factory
 ):
     # Model a main repo with different batch files and a different MCP interface.
     for name in (
@@ -134,12 +124,8 @@ def test_injected_business_gateway_works_without_batch_modules_or_mcp_adapter(
     from agent_apm_validation.durability import execute_job
     from cloud_journey_agents.durability.contracts import BusinessProgress
 
-    monkeypatch.setenv("DURABLE_DATABASE_URL", f"sqlite:///{tmp_path / 'injected.sqlite'}")
-    engine = build_durable_engine()
-    try:
-        init_durable_db(engine)
-    finally:
-        engine.dispose()
+    monkeypatch.setenv("DURABLE_DATABASE_URL", "invalid://agents-must-not-connect")
+    monkeypatch.setattr(checkpoints, "McpClient", mcp_client_factory(Principal("apm-validation-agent")))
 
     class Business:
         progress = None

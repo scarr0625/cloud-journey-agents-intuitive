@@ -159,6 +159,7 @@ def test_real_mcp_sdk_streamable_http_transport(monkeypatch, tool_error, availab
                 "structuredContent": {
                     "journey_id": "J-123",
                     "journey_state": "APM_VALIDATED",
+                    **({"error": {"code": "FORBIDDEN", "message": "private diagnostic"}} if tool_error else {}),
                 },
             }
         return httpx.Response(
@@ -174,12 +175,15 @@ def test_real_mcp_sdk_streamable_http_transport(monkeypatch, tool_error, availab
     monkeypatch.setenv("MCP_USER_AUTH_HEADER", "X-User-Authorization")
     client = McpClient(READ_TOOLS, url="https://mcp.test/mcp")
     if tool_error or not available:
-        with pytest.raises(McpError):
+        with pytest.raises(McpError) as caught:
             client.call(
                 "get_journey_status",
                 {"journey_id": "J-123"},
                 user_token="verified-token",
             )
+        if available and tool_error:
+            assert caught.value.code == "FORBIDDEN"
+            assert "private diagnostic" not in str(caught.value)
     else:
         result = client.call(
             "get_journey_status", {"journey_id": "J-123"}, user_token="verified-token"

@@ -15,13 +15,13 @@ src/
     identity.py            # Verified user context and cached service ID tokens
     guardrails.py          # APM IDs, tool allowlists, single-read and SQL checks
     mcp.py                 # MCP transport and tool availability gate
-    journey_db.py          # Explicit local-only, read-only database helper
+    journey_db.py          # Reject outdated direct-database integrations
     batch.py               # Compatibility imports for earlier PoC callers
     batch_server.py        # Compatibility imports for earlier PoC entry points
     logs.py                # Structured JSON logging
     config.py              # Environment settings and required-value checks
-    durability/            # Contracts, runtime, checkpoints, MCP and server adapters
-    sessions/              # ADK conversation persistence and runner lifecycle
+    durability/            # Workflow recovery and MCP checkpoint client
+    sessions/              # ADK session MCP client and runner lifecycle
   agent-apm-validation/     # Cloud Run Job
   agent-ad-provisioning/    # Cloud Run Job: submit and poll modes
   agent-app-factory/        # Cloud Run Job
@@ -32,7 +32,8 @@ migrations/
   business-state/          # Journey business schema / reference for client
   durable-state/           # Centrally applied batch checkpoint schema
   session-state/           # ADK v1 conversation schema (pinned ADK release)
-examples/local-business/   # Preserved interactive PoC and simulated business gateway
+references/schwab-mcp/     # Server-side persistence handlers and integration guide
+examples/local-business/   # Historical SQL simulator; never included in agent images
 workflows/                 # Local workflow runner and production orchestration notes
 tests/
 ```
@@ -59,7 +60,7 @@ src/agent-{assistant,orchestrator}/app/
   agent.py                 # Compose the model, prompt, and tools
   context.py               # Verified tool context and delegation
   prompt.py                # Agent instructions
-  server.py                  # HTTP app and endpoints
+  server.py                # HTTP app and endpoints
   sessions.py              # Bind this agent to the shared conversation runtime
   settings.py              # Agent configuration using shared config helpers
   tools.py                 # Agent-specific tools and routing
@@ -83,7 +84,7 @@ Durability and session support extend that package instead of creating separate
 
 | Agent | Shared functionality | Agent-owned application logic |
 | --- | --- | --- |
-| Orchestrator | Identity, service tokens, logging, config, sessions | Prompt and Assistant routing |
+| Orchestrator | Identity, service tokens, logging, config, MCP sessions | Prompt and Assistant routing |
 | Assistant | Identity forwarding, MCP gate, read guardrails, sessions | Prompt and status tools |
 | APM Validation | Batch runtime, MCP operations, durability, HTTP/CLI wrapper | APM validation step in `app/job.py` |
 | AD Provisioning | Same batch infrastructure | Submission and polling steps in `app/job.py` |
@@ -97,14 +98,18 @@ images. Importing the package opens no database connection.
 
 ## Ownership and database connections
 
-| Component | Direct connection | Business access |
+**All deployed agents access state through Schwab MCP. Their service accounts
+have no direct database permissions or database credentials.**
+
+| Component | MCP capabilities | Direct database connection |
 | --- | --- | --- |
-| APM Validation | Durable State DB | Private MCP -> Data API |
-| AD Provisioning | Durable State DB | Private MCP -> Data API |
-| App Factory | Durable State DB | Private MCP -> Data API |
-| Assistant | Session DB | Read-only private MCP -> Data API |
-| Orchestrator | Session DB | Routes questions to Assistant |
-| Client Data API | Business DB | Enforces business transitions and authorization |
+| APM Validation | Its business operations and durable claim/save/finish | None |
+| AD Provisioning | Submission/polling/recovery and durable claim/save/finish | None |
+| App Factory | Readiness/recovery and durable claim/save/finish | None |
+| Assistant | Authorized business reads and its users' sessions | None |
+| Orchestrator | Its users' sessions; routes business questions to Assistant | None |
+| Schwab MCP persistence handlers | Transactional durable/session tools | Durable State DB and Session DB |
+| Schwab Data API/business services behind MCP | Business validation, transitions, authorization | Journey business DB |
 
 `JourneyState` remains business logic owned by the client's Data API. The SQL
 models and transition simulator under `examples/local-business/` are a reference
@@ -112,14 +117,14 @@ and a runnable local demo. Production agent images do not include that package.
 `cloud_journey_agents.durability` contains checkpoint infrastructure and adapters
 for executing agent steps; it has no business SQL models or session imports.
 Its runtime accepts an injected business gateway so the main repo can reuse its
-existing operations. `journey_db.py` provides an
-optional developer-supplied SELECT helper, disabled unless `ALLOW_LOCAL_DB_READS=true`
-and always disabled on Cloud Run. It is not connected to deployed chat tools and
-never serves as an automatic fallback when MCP is unavailable. The local business
-simulator remains separate under `examples/`.
+existing MCP-backed operations. `journey_db.py` now rejects every call, including
+when the old local-read environment flag is set. MCP failure never enables a SQL
+fallback. SQL implementations exist only in the historical simulator and the
+Schwab server-side reference, outside deployed agent packages.
 
-Only the three batch jobs load/save `agent_execution`, `operation_checkpoint`, and
-`checkpoint_event`. Their five checkpoint statuses are `PENDING`, `RUNNING`,
+Only the three batch jobs call the durable tools. Schwab's server transacts on
+`agent_execution`, `operation_checkpoint`, `checkpoint_event`, and mutation receipts.
+The five checkpoint statuses are `PENDING`, `RUNNING`,
 `WAITING`, `COMPLETED`, and `FAILED`. AD submission and polling reuse one operation
 key and the same MyAccess request ID. A saved negative business result completes
 the operation but reports `successful=false`, so orchestration stops.
@@ -150,11 +155,12 @@ The equivalent installation using the manifests directly is:
 python -m pip install "./src[batch]" ./src/agent-apm-validation
 ```
 
-## Create the three state databases
+## Create state databases on the Schwab side
 
 Use the [migration guide](migrations/README.md) to create `cloud-journey-db`
 (business state), `durable-state-db` (batch recovery), and `session-db` (ADK
-conversation state). From the repository root:
+conversation state). Use a Schwab-owned migration identity, never an agent
+identity. From the repository root in the server/migration environment:
 
 ```powershell
 psql -X -h 127.0.0.1 -U journey -d postgres -f migrations/bootstrap.sql
@@ -191,13 +197,15 @@ See [GCP_DEPLOYMENT.md](GCP_DEPLOYMENT.md) for deployment and configuration deta
 ## Run the client-connected agents
 
 Configure the client's `MCP_URL`, its workload authentication, and the matching
-seven-tool contract in [MCP_CONTRACT.md](MCP_CONTRACT.md). The MCP transport uses
+contract in [MCP_CONTRACT.md](MCP_CONTRACT.md): five business capabilities, two
+status reads, three durable tools, and five session tools. The MCP transport uses
 Streamable HTTP. Endpoint names, business outcomes, and delegated authentication
 must be agreed with the client's server; they are not discovered or assumed.
 
-Apply `migrations/durable-state/apply.sql` to Durable State DB
-before running jobs. Runtime job identities need data privileges, not schema
-creation privileges. Deployed jobs do not call `create_all()`.
+Schwab must implement the requested tools and apply the durable/session schemas
+before the agents run. The [server reference](references/schwab-mcp/README.md)
+contains handler code, tool schemas, and transaction requirements. No deployed
+agent creates tables or opens database connections.
 
 ```powershell
 python -m agent_apm_validation.server --journey-id J-123 --workflow-run-id RUN-123
@@ -250,6 +258,8 @@ The earlier interactive playground, business state machine, approval simulator,
 and simulated MyAccess/App Factory operations are kept in
 [examples/local-business](examples/local-business/README.md). They run without a
 client MCP server and remain covered by the existing tests. Their broader
-interactive workflow is separate from the five client-facing deployments.
+interactive workflow uses historical direct SQL and is separate from the five
+policy-compliant client-facing deployments. Use the MCP server reference for
+current persistence integration work.
 
 The design reference is [durable_state_confluence.md](durable_state_confluence.md).

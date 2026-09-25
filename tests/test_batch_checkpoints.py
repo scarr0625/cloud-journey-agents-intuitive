@@ -12,8 +12,8 @@ from agent_apm_validation.job import WORKFLOW as APM_WORKFLOW
 from agent_ad_provisioning.job import WORKFLOW as AD_WORKFLOW
 from agent_app_factory.job import WORKFLOW as APP_FACTORY_WORKFLOW
 from journey_poc.cloud_journey.business_operations import LocalBusinessGateway
-from cloud_journey_agents.durability.checkpoints import CheckpointStore, OperationBusy
-from cloud_journey_agents.durability.models import (
+from journey_poc.durable_checkpoints import CheckpointStore, OperationBusy
+from journey_poc.durable_models import (
     AgentExecution,
     BatchAgent,
     CheckpointEvent,

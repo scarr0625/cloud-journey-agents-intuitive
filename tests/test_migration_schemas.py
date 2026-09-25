@@ -11,8 +11,19 @@ import pytest
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex, CreateTable
 
-from cloud_journey_agents.durability.models import DurableBase
 from journey_poc.cloud_journey.models import Base as BusinessBase
+from journey_poc.durable_models import DurableBase
+from sqlalchemy import MetaData
+from schwab_mcp_persistence.schema import protocol_tables
+
+
+def protocol_metadata(sessions=False):
+    metadata = MetaData()
+    if sessions:
+        for table in SessionBase.metadata.sorted_tables:
+            table.to_metadata(metadata)
+    protocol_tables(metadata, sessions=sessions)
+    return metadata
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,12 +39,16 @@ def compact(sql):
     [
         (SessionBase.metadata, "session-state/000_adk_sessions.sql"),
         (DurableBase.metadata, "durable-state/000_execution_checkpoints.sql"),
+        (protocol_metadata(), "durable-state/001_mcp_mutation_receipts.sql"),
+        (protocol_metadata(True), "session-state/001_mcp_session_protocol.sql"),
     ],
 )
 def test_migration_tables_and_indexes_match_runtime_metadata(metadata, filename):
     migration = compact((MIGRATIONS / filename).read_text())
     dialect = postgresql.dialect()
     for table in metadata.sorted_tables:
+        if filename.endswith("001_mcp_session_protocol.sql") and not table.name.startswith("mcp_"):
+            continue
         ddl = CreateTable(table, if_not_exists=True).compile(dialect=dialect)
         assert compact(str(ddl)) + ";" in migration, table.name
         for index in table.indexes:
@@ -46,9 +61,11 @@ def test_session_schema_version_and_dependency_pins_stay_in_sync():
     assert version("google-adk") == expected_version
     root_project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     shared_project = tomllib.loads((ROOT / "src/pyproject.toml").read_text())
+    server_project = tomllib.loads((ROOT / "references/schwab-mcp/pyproject.toml").read_text())
     requirement = f"google-adk=={expected_version}"
     assert requirement in root_project["project"]["dependencies"]
     assert requirement in shared_project["project"]["optional-dependencies"]["chat"]
+    assert requirement in server_project["project"]["dependencies"]
     migration = compact((MIGRATIONS / "session-state/000_adk_sessions.sql").read_text())
     schema_version = _schema_check_utils.LATEST_SCHEMA_VERSION
     assert f"VALUES('schema_version','{schema_version}')" in migration
@@ -68,8 +85,8 @@ def included_sql(path):
     "directory,expected_tables",
     [
         ("business-state", set(BusinessBase.metadata.tables)),
-        ("durable-state", set(DurableBase.metadata.tables)),
-        ("session-state", set(SessionBase.metadata.tables)),
+        ("durable-state", set(DurableBase.metadata.tables) | {"mcp_mutation_receipt"}),
+        ("session-state", set(protocol_metadata(True).tables)),
     ],
 )
 def test_each_database_bootstrap_contains_only_its_own_tables(directory, expected_tables):

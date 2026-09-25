@@ -23,10 +23,15 @@ class NoBatchModules(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname in ('cloud_journey_agents.batch', 'cloud_journey_agents.batch_server'):
             raise ImportError('The main repository owns its batch modules')
+        if fullname == 'cloud_journey_agents.durability.database' or fullname.startswith(('psycopg', 'pg8000', 'google.cloud.sql.connector')):
+            raise ImportError('Agents have no direct database drivers')
 sys.meta_path.insert(0, NoBatchModules())
 os.environ['DATABASE_URL'] = 'invalid://must-not-be-used'
 os.environ['CLOUD_SQL_INSTANCE'] = 'must-not-be-used'
 os.environ['DURABLE_DATABASE_URL'] = 'invalid://must-not-open-on-import'
+os.environ['SESSION_DATABASE_URL'] = 'invalid://must-not-open-on-import'
+import sqlalchemy
+sqlalchemy.create_engine = lambda *a, **k: (_ for _ in ()).throw(AssertionError('Direct DB connection'))
 importlib.import_module({module!r})
 assert not any(name.startswith('journey_poc') for name in sys.modules)
 assert 'cloud_journey_agents.journey_db' not in sys.modules
@@ -57,14 +62,11 @@ def test_each_batch_image_has_its_own_fixed_identity(module):
     assert ("--mode" in result.stdout) == (module == "agent_ad_provisioning")
 
 
-def test_durable_configuration_never_falls_back_to_business_database(monkeypatch):
-    from cloud_journey_agents.durability.database import build_durable_engine
-
-    monkeypatch.delenv("DURABLE_DATABASE_URL", raising=False)
-    monkeypatch.delenv("DURABLE_CLOUD_SQL_INSTANCE", raising=False)
-    monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
-    with pytest.raises(ValueError, match="DURABLE_DATABASE_URL"):
-        build_durable_engine()
+def test_direct_database_helper_rejects_even_local_access(monkeypatch):
+    from cloud_journey_agents.journey_db import read_rows
+    monkeypatch.setenv("ALLOW_LOCAL_DB_READS", "true")
+    with pytest.raises(ValueError, match="Direct database access is disabled"):
+        read_rows(None, None)
 
 
 def test_docker_contexts_package_only_their_own_agent_and_required_libraries():

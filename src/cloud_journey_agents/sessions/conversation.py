@@ -1,14 +1,14 @@
 """Run a conversational turn with persisted ADK sessions and verified context.
 
-ConversationRuntime binds one agent and application name to Session DB.
+ConversationRuntime binds one agent and application name to MCP session tools.
 Each query retrieves or creates a session scoped to that app and user,
 refreshes verified identity claims when needed, and runs the agent against
 the stored conversation. The response includes the reusable session ID.
 
 The synchronous entry point drives the async runner in its calling thread
 so request-scoped identity ContextVars remain available to tools. Session
-connections use the dedicated persistence service, which is registered
-for process-exit cleanup when the runtime is constructed.
+state is persisted by Schwab's MCP server. This runtime holds no database
+connection or credentials and cannot fall back to local storage.
 """
 
 import asyncio
@@ -41,7 +41,7 @@ class QueryResponse(BaseModel):
 class ConversationRuntime:
     def __init__(self, agent, app_name: str):
         self.app_name = app_name
-        self.sessions = build_session_service()
+        self.sessions = build_session_service(app_name)
         self.runner = Runner(
             agent=agent, app_name=app_name, session_service=self.sessions
         )

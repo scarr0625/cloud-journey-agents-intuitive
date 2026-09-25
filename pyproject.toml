@@ -33,7 +33,7 @@ addopts = "-ra"
 # The root distribution is for local development/testing only. Each image installs
 # its agent distribution and the shared package with its required dependency extras.
 [tool.setuptools]
-packages = ["cloud_journey_agents", "cloud_journey_agents.durability", "cloud_journey_agents.sessions", "agent_apm_validation", "agent_ad_provisioning", "agent_app_factory", "agent_assistant", "agent_orchestrator", "journey_poc", "journey_poc.cloud_journey", "workflows"]
+packages = ["cloud_journey_agents", "cloud_journey_agents.durability", "cloud_journey_agents.sessions", "agent_apm_validation", "agent_ad_provisioning", "agent_app_factory", "agent_assistant", "agent_orchestrator", "journey_poc", "journey_poc.cloud_journey", "workflows", "schwab_mcp_persistence"]
 
 [tool.setuptools.package-dir]
 "cloud_journey_agents" = "src/cloud_journey_agents"
@@ -45,3 +45,4 @@ packages = ["cloud_journey_agents", "cloud_journey_agents.durability", "cloud_jo
 "journey_poc" = "examples/local-business/journey_poc"
 "journey_poc.cloud_journey" = "examples/local-business/journey_poc/cloud_journey"
 "workflows" = "workflows"
+"schwab_mcp_persistence" = "references/schwab-mcp/schwab_mcp_persistence"

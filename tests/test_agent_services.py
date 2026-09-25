@@ -92,7 +92,7 @@ def test_authentication_context_is_cleared_even_when_processing_fails(monkeypatc
 
 
 def test_real_runner_keeps_request_token_and_persists_only_conversation(
-    monkeypatch, tmp_path
+    monkeypatch, mcp_client_factory
 ):
     from google.adk.agents import BaseAgent
     from google.adk.events import Event
@@ -111,9 +111,14 @@ def test_real_runner_keeps_request_token_and_persists_only_conversation(
                 ),
             )
 
-    monkeypatch.setenv(
-        "SESSION_DATABASE_URL", f"sqlite:///{tmp_path / 'conversation.sqlite'}"
-    )
+    from cloud_journey_agents.sessions import persistence
+    from schwab_mcp_persistence.service import Principal
+    claims = {"email": "first@example.com"}
+    def verified(token):
+        assert token in {"first-ephemeral-token", "second-ephemeral-token"}
+        return Principal("test_app", "user-1", claims["email"])
+    monkeypatch.setattr(persistence, "McpClient", mcp_client_factory(verified))
+    monkeypatch.setenv("SESSION_DATABASE_URL", "invalid://agents-must-not-connect")
     identity = {"subject": "user-1", "email": "first@example.com"}
     session_id = None
     # Restart the runtime, rotate the request token, and refresh identity claims
@@ -138,6 +143,7 @@ def test_real_runner_keeps_request_token_and_persists_only_conversation(
             current_user_token.reset(handle)
             runtime.sessions.close()
         identity["email"] = "updated@example.com"
+        claims["email"] = identity["email"]
     assert seen == ["first-ephemeral-token", "second-ephemeral-token"]
     assert len([event for event in session.events if event.author == "user"]) == 2
     assert current_user_token.get() == ""

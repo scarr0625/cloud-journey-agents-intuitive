@@ -4,10 +4,10 @@ Chat tools accept one Journey or APM lookup at a time. Batch identities
 receive explicit tool allowlists for their own business operations. These
 checks run before transport so requests outside those contracts fail early.
 
-The SQL helper accepts structured SELECT statements and rejects write
-constructs, including write CTEs. journey_db.py additionally enforces a
-read-only database transaction because SQL shape alone cannot establish
-that every called database function is free of side effects.
+Durable and session tools have separate runtime allowlists and are never
+model tools. The SQL expression validator is retained for the historical
+local simulator, whose own adapter enforces read-only transactions. Deployed
+journey_db.py rejects direct access, and all agent persistence goes through MCP.
 """
 
 import re
@@ -19,6 +19,13 @@ class GuardrailError(ValueError):
 
 CANONICAL_APM_ID_PATTERN = re.compile(r"^APM00\d{4}$")
 READ_TOOLS = frozenset({"get_journey_status", "get_journey_status_by_apm_id"})
+DURABLE_TOOLS = frozenset({
+    "claim_durable_operation", "save_durable_checkpoint", "finish_durable_operation",
+})
+SESSION_TOOLS = frozenset({
+    "create_agent_session", "get_agent_session", "list_agent_sessions",
+    "append_agent_session_event", "delete_agent_session",
+})
 BATCH_TOOLS = {
     "apm-validation-agent": frozenset({"get_journey_operation", "validate_apm"}),
     "ad-provisioning-agent": frozenset(

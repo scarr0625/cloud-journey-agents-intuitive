@@ -5,7 +5,7 @@ definition. The tool list is limited to authorized Journey/APM status
 reads; business writes and checkpoint execution belong to batch agents.
 
 Importing this module creates the agent definition. sessions.py creates
-the runner and database-backed conversation runtime when a request needs it.
+the runner and MCP-backed conversation runtime when a request needs it.
 """
 
 from .settings import APP_NAME, MODEL

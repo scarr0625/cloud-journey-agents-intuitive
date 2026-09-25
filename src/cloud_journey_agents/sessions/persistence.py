@@ -1,106 +1,147 @@
-"""Keep ADK conversation storage on one dedicated database event loop.
+"""ADK session persistence through authenticated Schwab MCP tools only.
 
-Synchronous HTTP handlers and async agent callbacks can run on different
-threads or loops. PersistentSessionService forwards their session calls
-to one ADK DatabaseSessionService, keeping its async connections and locks
-on the same loop. close() releases that service and stops its worker thread.
-
-ADK owns session tables, serialization, and event/state updates. Connection
-setup uses SESSION_DATABASE_URL, with a local session-db default and driver
-normalization for PostgreSQL or SQLite. It never reuses business or durable
-checkpoint database configuration. The worker starts when the service is
-constructed, not merely when this module is imported.
+The server commits session events, state deltas, and revision changes together.
+Agents retain ADK Session objects in memory and send optimistic versions on
+updates. Workload/application and delegated-user checks are enforced on both
+sides; user tokens travel as headers and are never put into persistence payloads.
+There is no database URL, SQL driver, worker loop, or local persistence fallback.
 """
 
 from __future__ import annotations
 
 import asyncio
-import sys
-import threading
-from typing import Any
+from uuid import uuid4
 
-from google.adk.sessions import BaseSessionService, DatabaseSessionService
+from google.adk.sessions import BaseSessionService, Session
+from google.adk.sessions.base_session_service import ListSessionsResponse
 
-from ..config import setting
+from ..guardrails import SESSION_TOOLS
+from ..identity import current_user_token
+from ..mcp import McpClient, McpError, call_idempotent
 
 
 class PersistentSessionService(BaseSessionService):
-    """Use one event loop for ADK's async database connections and session locks.
+    def __init__(self, *, app_name: str, client=None):
+        if not app_name:
+            raise ValueError("Session persistence requires a fixed application name")
+        self.app_name = app_name
+        self.client = client if client is not None else McpClient(SESSION_TOOLS)
 
-    The existing HTTP handlers and Runner.run use different threads/loops. Both
-    sync handlers and async runner callbacks delegate to this same ADK service.
-    ADK owns the physical tables, serialization, state deltas, and concurrency.
-    """
+    def _scope(self, app_name, user_id, session_id=None):
+        if app_name != self.app_name or not user_id:
+            raise ValueError("Session application and user must match the request scope")
+        if session_id is not None and not session_id:
+            raise ValueError("Session ID must be nonempty")
+        return {"app_name": app_name, "user_id": user_id, **(
+            {"session_id": session_id} if session_id is not None else {}
+        )}
 
-    def __init__(self, db_url: str):
-        self._service = DatabaseSessionService(db_url=db_url)
-        # psycopg's async driver requires a selector loop on Windows.
-        self._loop = (
-            asyncio.SelectorEventLoop()
-            if sys.platform == "win32"
-            else asyncio.new_event_loop()
-        )
-        self._thread = threading.Thread(
-            target=self._loop.run_forever, daemon=True, name="session-db"
-        )
-        self._thread.start()
+    def _call(self, tool, arguments, *, mutation=False):
+        token = current_user_token.get()
+        if not token:
+            raise McpError("Session persistence requires verified request identity", code="UNAUTHENTICATED")
+        if mutation:
+            return call_idempotent(self.client, tool, {
+                **arguments, "mutation_id": str(uuid4()),
+            }, user_token=token)
+        return self.client.call(tool, arguments, user_token=token)
 
-    def _submit(self, method: str, **kwargs: Any):
-        return asyncio.run_coroutine_threadsafe(
-            getattr(self._service, method)(**kwargs), self._loop
-        )
+    def _decode(self, payload, scope):
+        try:
+            version = payload["version"]
+            raw = payload["session"]
+            if type(version) is not int or version < 1 or not {
+                "id", "app_name", "user_id", "state", "events", "last_update_time"
+            }.issubset(raw):
+                raise ValueError("Incomplete session envelope")
+            session = Session.model_validate(raw)
+            if (
+                session.app_name != scope["app_name"]
+                or session.user_id != scope["user_id"]
+                or ("session_id" in scope and session.id != scope["session_id"])
+            ):
+                raise ValueError("Mismatched session identity")
+            if any(key.startswith("temp:") for key in session.state):
+                raise ValueError("Temporary state must not be persisted")
+            for event in session.events:
+                if any(key.startswith("temp:") for key in event.actions.state_delta):
+                    raise ValueError("Temporary event state must not be persisted")
+            session._storage_update_marker = f"mcp:{version}"
+            return session
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise McpError("Invalid MCP session response", code="INVALID_RESPONSE") from exc
+
+    def create_session_sync(self, *, app_name, user_id, state=None, session_id=None):
+        scope = self._scope(app_name, user_id, session_id or uuid4().hex)
+        persistent = {key: value for key, value in (state or {}).items() if not key.startswith("temp:")}
+        return self._decode(self._call("create_agent_session", {
+            **scope, "state": persistent,
+        }, mutation=True), scope)
 
     async def create_session(self, **kwargs):
-        return await asyncio.wrap_future(self._submit("create_session", **kwargs))
+        return await asyncio.to_thread(self.create_session_sync, **kwargs)
+
+    def get_session_sync(self, *, app_name, user_id, session_id, config=None):
+        scope = self._scope(app_name, user_id, session_id)
+        arguments = {**scope, "config": config.model_dump(exclude_none=True) if config else {}}
+        payload = self._call("get_agent_session", arguments)
+        return None if payload is None else self._decode(payload, scope)
 
     async def get_session(self, **kwargs):
-        return await asyncio.wrap_future(self._submit("get_session", **kwargs))
+        return await asyncio.to_thread(self.get_session_sync, **kwargs)
+
+    def list_sessions_sync(self, *, app_name, user_id=None):
+        scope = self._scope(app_name, user_id)
+        payload = self._call("list_agent_sessions", scope)
+        if not isinstance(payload, dict) or not isinstance(payload.get("sessions"), list):
+            raise McpError("Invalid MCP session list", code="INVALID_RESPONSE")
+        return ListSessionsResponse(sessions=[self._decode(item, scope) for item in payload["sessions"]])
 
     async def list_sessions(self, **kwargs):
-        return await asyncio.wrap_future(self._submit("list_sessions", **kwargs))
+        return await asyncio.to_thread(self.list_sessions_sync, **kwargs)
+
+    def delete_session_sync(self, *, app_name, user_id, session_id):
+        scope = self._scope(app_name, user_id, session_id)
+        payload = self._call("delete_agent_session", scope, mutation=True)
+        if not isinstance(payload, dict) or payload != {**scope, "deleted": True}:
+            raise McpError("Invalid MCP session deletion acknowledgment", code="INVALID_RESPONSE")
 
     async def delete_session(self, **kwargs):
-        return await asyncio.wrap_future(self._submit("delete_session", **kwargs))
-
-    async def append_event(self, session, event):
-        return await asyncio.wrap_future(
-            self._submit("append_event", session=session, event=event)
-        )
-
-    def create_session_sync(self, **kwargs):
-        return self._submit("create_session", **kwargs).result()
-
-    def get_session_sync(self, **kwargs):
-        return self._submit("get_session", **kwargs).result()
+        return await asyncio.to_thread(self.delete_session_sync, **kwargs)
 
     def append_event_sync(self, session, event):
-        return self._submit("append_event", session=session, event=event).result()
+        if event.partial:
+            return event
+        scope = self._scope(session.app_name, session.user_id, session.id)
+        marker = session._storage_update_marker or ""
+        if not marker.startswith("mcp:"):
+            raise ValueError("Session must be loaded from MCP before appending events")
+        version = int(marker.removeprefix("mcp:"))
+        persistent_event = self._trim_temp_delta_state(event.model_copy(deep=True))
+        wire_event = persistent_event.model_dump(mode="json", by_alias=False)
+        payload = self._call("append_agent_session_event", {
+            **scope, "expected_version": version, "event": wire_event,
+        }, mutation=True)
+        saved = self._decode(payload, scope)
+        if saved._storage_update_marker != f"mcp:{version + 1}":
+            raise McpError("Invalid session revision acknowledgment", code="INVALID_RESPONSE")
+        events = [item for item in saved.events if item.id == event.id]
+        if len(events) != 1 or events[0].model_dump(mode="json", by_alias=False) != wire_event:
+            raise McpError("MCP did not acknowledge the appended event", code="INVALID_RESPONSE")
+        temporary = {key: value for key, value in session.state.items() if key.startswith("temp:")}
+        session.state = {**saved.state, **temporary}
+        self._apply_temp_state(session, event)
+        session.events = saved.events
+        session.last_update_time = saved.last_update_time
+        session._storage_update_marker = saved._storage_update_marker
+        return events[0]
 
-    def delete_session_sync(self, **kwargs):
-        return self._submit("delete_session", **kwargs).result()
+    async def append_event(self, session, event):
+        return await asyncio.to_thread(self.append_event_sync, session, event)
 
     def close(self):
-        if not self._thread.is_alive():
-            return
-        try:
-            asyncio.run_coroutine_threadsafe(self._service.close(), self._loop).result()
-        finally:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            self._thread.join()
-            self._loop.close()
+        """No agent-owned database resources exist to close."""
 
 
-def build_session_service() -> PersistentSessionService:
-    # Cloud Run can use a Unix socket or Auth Proxy in the explicit URL. Do not
-    # fall back to Journey DB or ephemeral storage when configuration is absent.
-    url = setting(
-        "SESSION_DATABASE_URL",
-        "postgresql+psycopg://journey:journey@localhost:5432/session-db",
-    )
-    if url.startswith("postgres://"):
-        url = "postgresql+psycopg://" + url.removeprefix("postgres://")
-    elif url.startswith("postgresql://"):
-        url = "postgresql+psycopg://" + url.removeprefix("postgresql://")
-    elif url.startswith("sqlite://"):
-        url = "sqlite+aiosqlite://" + url.removeprefix("sqlite://")
-    return PersistentSessionService(url)
+def build_session_service(app_name: str) -> PersistentSessionService:
+    return PersistentSessionService(app_name=app_name)

@@ -16,8 +16,8 @@ import atexit
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from .models import DurableBase
-from ..config import required_setting, setting
+from .durable_models import DurableBase
+from cloud_journey_agents.config import required_setting, setting
 
 
 def build_durable_engine() -> Engine:

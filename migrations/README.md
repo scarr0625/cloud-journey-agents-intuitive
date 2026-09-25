@@ -1,5 +1,10 @@
 # Three independent state databases
 
+These are **Schwab-side** migrations. Agent service accounts have no database
+permissions: every agent reads/writes state through the authenticated Schwab MCP
+server. See the [server reference](../references/schwab-mcp/README.md) for tool
+handlers, schemas, ownership, and transaction rules.
+
 These scripts target PostgreSQL 16 (also the local Compose version). Each state
 store has its own database; Journey IDs in the durable database are logical
 references, not cross-database foreign keys.
@@ -7,8 +12,8 @@ references, not cross-database foreign keys.
 | Directory | Default database | Contents | Runtime consumer |
 | --- | --- | --- | --- |
 | `business-state/` | `cloud-journey-db` (Journey DB) | Journeys, group authorization, business audit, operation results, external dependencies | Client Data API; optional local business simulator |
-| `durable-state/` | `durable-state-db` | `agent_execution`, `operation_checkpoint`, `checkpoint_event` | The three batch agents |
-| `session-state/` | `session-db` | ADK `sessions`, `events`, `app_states`, `user_states`, `adk_internal_metadata` | Assistant and Orchestrator |
+| `durable-state/` | `durable-state-db` | Execution, checkpoint, audit, and `mcp_mutation_receipt` tables | Schwab MCP durable handlers |
+| `session-state/` | `session-db` | ADK v1 tables plus MCP revisions, event sequence, deletion markers, and mutation receipts | Schwab MCP session handlers |
 
 ## Create all three databases and schemas
 
@@ -53,12 +58,18 @@ psql -X -h DB_HOST -U MIGRATION_OWNER -d durable-state-db -f migrations/durable-
 psql -X -h DB_HOST -U MIGRATION_OWNER -d session-db -f migrations/session-state/apply.sql
 ```
 
-Schemas live in `public`. Give runtime identities `CONNECT`, schema `USAGE`, and
-the table/sequence data privileges needed in their own database. Keep schema
-ownership and database creation with the migration identity. Chat identities
-should not have checkpoint/business database access; batch identities should not
-have session/business database access. The production business schema remains
-owned by the client's Data API; use its existing migration pipeline for that DB.
+Schemas live in `public`. Give only Schwab server-side persistence identities
+`CONNECT`, schema `USAGE`, and required table/sequence data privileges. Keep schema
+ownership and database creation with the migration identity. No chat or batch
+agent identity receives DB access, credentials, or Cloud SQL permissions. The
+production business schema remains owned by Schwab's Data API; adapt this reference
+through its existing migration pipeline rather than replacing production tables.
+
+`durable-state/apply.sql` includes the checkpoint baseline and atomic mutation
+receipt table. `session-state/apply.sql` includes ADK v1 and MCP protocol sidecars.
+The receipt and actual state mutation must commit together on the MCP server.
+These are fresh-schema/idempotent bootstrap scripts, not a migration ledger or
+automatic upgrade of arbitrary existing installations.
 
 ## Business schema and historical migrations
 
@@ -81,7 +92,7 @@ data. No destructive refresh/normalization scripts under `scripts/` are invoked.
 ## Session schema compatibility
 
 `session-state/000_adk_sessions.sql` matches **google-adk 2.9.2**, schema **v1**.
-Both Python dependency manifests pin that release so an unattended dependency
+The agent, development, and server-reference manifests pin that release so an unattended dependency
 upgrade cannot silently change the required session schema. The schema check in
 `tests/test_migration_schemas.py` compares the checked-in table/index DDL to ADK's
 PostgreSQL ORM definitions; review the migration and that test when upgrading ADK.
@@ -94,8 +105,14 @@ The migration writes `adk_internal_metadata.schema_version = '1'` through the
 `key`/`value` metadata row. It refuses unknown versions and existing unversioned
 session tables; it never relabels legacy Pickle payloads as JSON. Migrate an
 existing v0 session database with the ADK migration tooling before applying this
-baseline. ADK still checks tables/indexes on first use; with this schema already
-present, runtime identities do not need schema-creation privileges.
+baseline. The MCP reference reflects existing tables and never creates them.
+
+`001_mcp_session_protocol.sql` adds revisions, event order/hash, deletion markers,
+and mutation receipts without changing ADK's base tables. Existing ADK sessions
+require a reviewed offline backfill of revisions and event sequence/hash before
+cutover. Without a revision the handlers return `MIGRATION_REQUIRED`. See the
+server reference for backfill constraints; existing v1 data is not automatically
+assigned a guessed order. All writers must use the MCP handlers after cutover.
 
 ## Local Docker Compose
 

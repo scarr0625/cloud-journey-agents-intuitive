@@ -22,7 +22,7 @@ from cloud_journey_agents.durability import server as batch_server
 from cloud_journey_agents.durability.contracts import JobResult
 from cloud_journey_agents.durability.checkpoints import OperationBusy
 from cloud_journey_agents.guardrails import GuardrailError, require_read_only_statement
-from cloud_journey_agents.journey_db import read_rows
+from journey_poc.local_reads import read_rows
 from cloud_journey_agents.logs import JsonFormatter
 from cloud_journey_agents.mcp import McpClient, McpError, READ_TOOLS
 

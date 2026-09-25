@@ -28,6 +28,7 @@ from .runtime import execute_job
 from ..config import load_config
 from .checkpoints import OperationBusy
 from ..logs import configure_logging
+from ..mcp import McpError
 
 
 class JobExecutor(Protocol):
@@ -99,5 +100,7 @@ def create_batch_app(
             )
         except OperationBusy as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except McpError as exc:
+            raise HTTPException(status_code=503, detail="MCP business or persistence service is unavailable") from exc
 
     return app

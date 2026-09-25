@@ -18,17 +18,17 @@ unique name, avoiding collisions between five packages all named `app`).
 python -m agent_ad_provisioning.server --journey-id J-123 --workflow-run-id RUN-123
 ```
 
-Apply `migrations/durable-state/000_execution_checkpoints.sql` centrally before
-running jobs. This job never creates database tables. Business operations use
-private MCP; only checkpoint persistence opens the Durable State DB.
+Schwab applies `migrations/durable-state/apply.sql` behind its MCP server.
+Both business operations and checkpoint persistence use MCP. This agent has no
+database permissions, connection string, or SQL fallback.
 
 Use `--mode submit` and subsequent `--mode poll` invocations of this same job.
 
 The domain steps live in `app/job.py`. The agent's `app/durability.py` binds those
 steps to the shared durable runtime; `app/server.py` uses that module for both
-HTTP and CLI invocations. Each invocation opens the Durable State DB using
-`DURABLE_*` configuration and releases its connection pool when finished.
-Checkpoint claims, recovery, and state transitions remain in the shared package.
+HTTP and CLI invocations. The shared client calls the MCP claim/save/finish
+tools. Schwab atomically enforces leases, versions, audit events, and retry
+receipts in Durable State DB. Agents only keep validated snapshots.
 
 This integration imports `cloud_journey_agents.durability` directly and does not
 require the shared `batch.py` or `batch_server.py`. For copying it into the main

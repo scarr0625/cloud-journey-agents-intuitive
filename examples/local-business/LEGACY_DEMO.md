@@ -1,3 +1,7 @@
+> Historical SQL simulator / server-side test reference. This direct-database
+> example is not a policy-compliant agent deployment. Production agents use MCP
+> for all persistence; see `references/schwab-mcp/README.md` at the repo root.
+
 > These are the preserved interactive PoC notes. Commands run from the repository root after `pip install -e ".[test]"`. Set `JOURNEY_WORKFLOW_BACKEND=local` for the simulator. Deployment uses the five folders under `src/`; see the root README.
 
 # Durable Cloud Journey Orchestrator PoC

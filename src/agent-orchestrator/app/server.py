@@ -20,6 +20,7 @@ from cloud_journey_agents.identity import (
     verified_identity_state,
 )
 from cloud_journey_agents.logs import configure_logging
+from cloud_journey_agents.mcp import McpError
 from cloud_journey_agents.sessions.conversation import QueryRequest, QueryResponse
 
 from .sessions import get_runtime
@@ -47,3 +48,8 @@ def query(
             )
     except UserAuthenticationError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except McpError as exc:
+        status = 409 if exc.code in {"STALE_SESSION", "ALREADY_EXISTS", "EVENT_ALREADY_RECORDED"} else 503
+        if exc.code in {"FORBIDDEN", "UNAUTHENTICATED"}:
+            status = 403
+        raise HTTPException(status_code=status, detail="MCP session operation could not be completed") from exc

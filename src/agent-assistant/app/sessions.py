@@ -1,8 +1,8 @@
 """Bind the Assistant's agent definition to the shared conversation runtime.
 
-get_runtime() constructs the runner and Session DB service on first use
+get_runtime() constructs the runner and MCP session client on first use
 and caches the result for this process. Importing the agent's HTTP module
-therefore does not require a live session database for its health route.
+therefore does not require a live MCP connection for its health route.
 
 The shared sessions package owns persistence and cleanup. This file only
 supplies the Assistant's root agent and application name so its stored

@@ -1,6 +1,6 @@
 """Conversation persistence shared by the Assistant and Orchestrator.
 
-The persistence submodule adapts ADK's database session service, and the
+The persistence submodule adapts ADK sessions to Schwab MCP tools, and the
 conversation submodule connects that service to an agent runner. Importing
 this namespace alone starts no session worker or database connection.
 

@@ -13,7 +13,7 @@ from journey_poc.cloud_journey.identity import (
     verified_identity_state,
 )
 from journey_poc import main
-from cloud_journey_agents.sessions.persistence import PersistentSessionService
+from journey_poc.session_database import PersistentSessionService
 
 
 @pytest.fixture(autouse=True)

@@ -13,9 +13,9 @@ from agent_ad_provisioning.job import WORKFLOW as AD_WORKFLOW
 from agent_app_factory.job import WORKFLOW as APP_FACTORY_WORKFLOW
 
 from .cloud_journey.business_operations import LocalBusinessGateway
-from cloud_journey_agents.durability.checkpoints import CheckpointStore
+from .durable_checkpoints import CheckpointStore
 from .cloud_journey.database import SessionLocal, engine, init_db
-from cloud_journey_agents.durability.database import (
+from .durable_database import (
     build_durable_engine,
     durable_session_factory,
     init_durable_db,

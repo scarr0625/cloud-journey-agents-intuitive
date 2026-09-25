@@ -31,7 +31,22 @@ from .identity import service_identity_token
 
 
 class McpError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str | None = None, retryable: bool = False):
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+
+def call_idempotent(client, name, arguments, *, user_token=""):
+    """Retry one transport failure with the identical server-deduplicated mutation ID."""
+    if not arguments.get("mutation_id"):
+        raise ValueError("A persistence mutation requires mutation_id")
+    for attempt in range(2):
+        try:
+            return client.call(name, arguments, user_token=user_token)
+        except McpError as exc:
+            if not exc.retryable or attempt:
+                raise
 
 
 class McpClient:
@@ -85,6 +100,10 @@ class McpClient:
             )
         except McpError:
             raise
+        except (TimeoutError, httpx.TransportError) as exc:
+            raise McpError(
+                f"MCP tool {name} transport failed", retryable=True
+            ) from exc
         except Exception as exc:
             # Preserve the cause for diagnostics without returning auth headers.
             raise McpError(f"MCP tool {name} failed ({type(exc).__name__})") from exc
@@ -114,7 +133,16 @@ class McpClient:
                         seen_cursors.add(cursor)
                     response = await session.call_tool(name, arguments)
         if response.isError:
-            raise McpError(f"MCP tool {name} reported an error")
+            payload = response.structuredContent
+            if payload is None:
+                blocks = [block.text for block in response.content if block.type == "text"]
+                try:
+                    payload = json.loads(blocks[0]) if len(blocks) == 1 else None
+                except (ValueError, TypeError):
+                    payload = None
+            error = payload.get("error", {}) if isinstance(payload, dict) else {}
+            code = error.get("code") if isinstance(error, dict) else None
+            raise McpError(f"MCP tool {name} reported an error", code=code)
         if response.structuredContent is not None:
             payload = response.structuredContent
         else:
@@ -125,5 +153,7 @@ class McpClient:
                 )
             payload = json.loads(content[0])
         if isinstance(payload, dict) and payload.get("ok") is False:
-            raise McpError(f"MCP tool {name} returned an unsuccessful result")
+            error = payload.get("error", {})
+            code = error.get("code") if isinstance(error, dict) else None
+            raise McpError(f"MCP tool {name} returned an unsuccessful result", code=code)
         return payload

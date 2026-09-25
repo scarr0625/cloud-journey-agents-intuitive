@@ -1,34 +1,14 @@
-"""SQLAlchemy schema and state vocabulary for the Durable State DB.
+"""Wire models for checkpoint state returned by Schwab MCP.
 
-AgentExecution records each invocation, OperationCheckpoint retains the
-latest progress for a Journey operation, and CheckpointEvent records its
-saved state changes. Constraints identify supported batch agents and
-checkpoint statuses; ownership and version fields support lease checks.
-
-Journey IDs are logical references to business data in a separate database.
-These models contain execution state rather than the authoritative Journey
-lifecycle or chat history. Keep their schema aligned with the migration
-under migrations/durable-state/ when changing persistence fields.
+Agents hold validated snapshots, not ORM entities or database connections.
+Schwab owns durable transactions, server-clock leases, and fencing versions.
+Database schema and SQL handlers live only in the Schwab server-side reference.
 """
-
-from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from uuid import uuid4
 
-from sqlalchemy import (
-    CheckConstraint,
-    DateTime,
-    ForeignKey,
-    Integer,
-    String,
-    Text,
-    UniqueConstraint,
-)
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-
-from .clock import utc_now
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 
 class CheckpointStatus(str, Enum):
@@ -52,97 +32,26 @@ class CheckpointStage(str, Enum):
     APP_FACTORY_VALIDATION = "APP_FACTORY_VALIDATION"
 
 
-def new_id() -> str:
-    return str(uuid4())
+class OperationCheckpoint(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
+    checkpoint_id: str = Field(min_length=1)
+    journey_id: str = Field(min_length=1)
+    agent_name: BatchAgent
+    workflow_run_id: str = Field(min_length=1)
+    latest_execution_id: str = Field(min_length=1)
+    operation_key: str = Field(min_length=1)
+    current_stage: CheckpointStage
+    checkpoint_status: CheckpointStatus
+    external_reference: str | None = None
+    result_reference: str | None = None
+    last_error: str | None = None
+    version: StrictInt = Field(gt=0)
+    lease_expires_at: datetime | None
 
-class DurableBase(DeclarativeBase):
-    pass
-
-
-class AgentExecution(DurableBase):
-    __tablename__ = "agent_execution"
-    __table_args__ = (
-        CheckConstraint(
-            "agent_name IN ('apm-validation-agent', 'ad-provisioning-agent', "
-            "'app-factory-helper-agent')",
-            name="ck_execution_agent",
-        ),
-    )
-
-    execution_id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=new_id
-    )
-    # Existing PoC Journey IDs are J-..., so keep a logical string reference.
-    journey_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    agent_name: Mapped[str] = mapped_column(String(64), nullable=False)
-    workflow_run_id: Mapped[str] = mapped_column(
-        String(256), nullable=False, index=True
-    )
-    execution_result: Mapped[str] = mapped_column(String(20), nullable=False)
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now
-    )
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    error: Mapped[str | None] = mapped_column(Text)
-
-
-class OperationCheckpoint(DurableBase):
-    __tablename__ = "operation_checkpoint"
-    __table_args__ = (
-        UniqueConstraint("journey_id", "operation_key", name="uq_checkpoint_operation"),
-        CheckConstraint(
-            "checkpoint_status IN ('PENDING', 'RUNNING', 'WAITING', 'COMPLETED', 'FAILED')",
-            name="ck_checkpoint_status",
-        ),
-    )
-
-    checkpoint_id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=new_id
-    )
-    journey_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    latest_execution_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_execution.execution_id")
-    )
-    operation_key: Mapped[str] = mapped_column(String(128), nullable=False)
-    current_stage: Mapped[str] = mapped_column(String(64), nullable=False)
-    checkpoint_status: Mapped[str] = mapped_column(String(20), nullable=False)
-    external_reference: Mapped[str | None] = mapped_column(String(256))
-    result_reference: Mapped[str | None] = mapped_column(String(256))
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now
-    )
-    last_error: Mapped[str | None] = mapped_column(Text)
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
-class CheckpointEvent(DurableBase):
-    __tablename__ = "checkpoint_event"
-    __table_args__ = (
-        CheckConstraint(
-            "new_status IN ('PENDING', 'RUNNING', 'WAITING', 'COMPLETED', 'FAILED')",
-            name="ck_event_new_status",
-        ),
-        CheckConstraint(
-            "previous_status IS NULL OR previous_status IN "
-            "('PENDING', 'RUNNING', 'WAITING', 'COMPLETED', 'FAILED')",
-            name="ck_event_previous_status",
-        ),
-    )
-
-    checkpoint_event_id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=new_id
-    )
-    checkpoint_id: Mapped[str] = mapped_column(
-        ForeignKey("operation_checkpoint.checkpoint_id"), index=True
-    )
-    execution_id: Mapped[str] = mapped_column(
-        ForeignKey("agent_execution.execution_id"), index=True
-    )
-    previous_status: Mapped[str | None] = mapped_column(String(20))
-    new_status: Mapped[str] = mapped_column(String(20), nullable=False)
-    stage: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now
-    )
+    @field_validator("lease_expires_at")
+    @classmethod
+    def aware_lease(cls, value):
+        if value is not None and value.utcoffset() is None:
+            raise ValueError("MCP leases must include a timezone")
+        return value
